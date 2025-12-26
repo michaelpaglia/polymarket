@@ -1,0 +1,16 @@
+[package]
+name = "hft-risk"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+hft-core.workspace = true
+tokio.workspace = true
+dashmap.workspace = true
+parking_lot.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+rust_decimal.workspace = true
+rust_decimal_macros.workspace = true
+chrono.workspace = true
+serde.workspace = true

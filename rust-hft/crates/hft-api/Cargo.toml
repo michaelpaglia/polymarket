@@ -1,0 +1,24 @@
+[package]
+name = "hft-api"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+hft-core.workspace = true
+hft-risk.workspace = true
+hft-websocket.workspace = true
+hft-metrics.workspace = true
+tokio.workspace = true
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+rust_decimal.workspace = true
+rust_decimal_macros.workspace = true
+chrono.workspace = true
+parking_lot.workspace = true
+uuid.workspace = true
