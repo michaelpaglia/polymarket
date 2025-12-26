@@ -40,8 +40,9 @@ class NewsSettings(BaseSettings):
 
     newsapi_key: str = Field(default="", alias="NEWSAPI_KEY")
     gnews_api_key: str = Field(default="", alias="GNEWS_API_KEY")
+    grok_api_key: str = Field(default="", alias="GROK_API_KEY")
     poll_interval_seconds: int = 60
-    sources: list[str] = ["newsapi", "gnews"]
+    sources: list[str] = ["newsapi", "gnews", "grok"]
 
 
 class MarketSettings(BaseSettings):
