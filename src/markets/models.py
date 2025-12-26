@@ -1,6 +1,6 @@
 """Market data models."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from pydantic import BaseModel, Field
@@ -85,7 +85,8 @@ class Market(BaseModel):
         """Calculate days until market resolution."""
         if self.end_date is None:
             return None
-        delta = self.end_date - datetime.now()
+        now = datetime.now(timezone.utc)
+        delta = self.end_date - now
         return max(0, delta.days)
 
     @property
