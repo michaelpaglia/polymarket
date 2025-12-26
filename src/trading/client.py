@@ -30,7 +30,9 @@ class OrderResult:
     success: bool
     order_id: str | None
     message: str
-    filled_amount: float = 0.0
+    filled_amount: float = 0.0  # For BUY: shares received. For SELL: USDC received.
+    shares_filled: float = 0.0  # Actual shares filled (BUY or SELL)
+    usdc_amount: float = 0.0    # USDC spent (BUY) or received (SELL)
     average_price: float = 0.0
 
 
@@ -295,25 +297,51 @@ class PolymarketClient:
             signed_order = self.client.create_market_order(order_args)
             response: Any = self.client.post_order(signed_order, OrderType.FOK)  # type: ignore[arg-type]
 
+            # Parse response
+            # For BUY: takingAmount=shares, makingAmount=USDC spent
+            # For SELL: takingAmount=USDC received, makingAmount=shares sold
+            order_id: str | None = None
+            taking_amount = 0.0
+            making_amount = 0.0
+
+            if isinstance(response, dict):
+                order_id = response.get("orderID")
+                taking_amount = float(response.get("takingAmount", 0))
+                making_amount = float(response.get("makingAmount", 0))
+            elif hasattr(response, "orderID"):
+                order_id = response.orderID
+                taking_amount = float(getattr(response, "takingAmount", 0))
+                making_amount = float(getattr(response, "makingAmount", 0))
+
+            # Calculate shares and USDC based on side
+            if side.upper() == "BUY":
+                shares_filled = taking_amount  # Shares received
+                usdc_amount = making_amount    # USDC spent
+            else:
+                shares_filled = making_amount  # Shares sold
+                usdc_amount = taking_amount    # USDC received
+
+            # Calculate average price
+            avg_price = usdc_amount / shares_filled if shares_filled > 0 else 0.0
+
             logger.info(
                 "Market order placed",
                 token_id=token_id,
                 side=side,
-                amount_usd=amount_usd,
-                response=response,
+                shares_filled=shares_filled,
+                usdc_amount=usdc_amount,
+                avg_price=avg_price,
+                order_id=order_id,
             )
-
-            # Extract order ID from response
-            order_id: str | None = None
-            if isinstance(response, dict):
-                order_id = response.get("orderID")
-            elif hasattr(response, "orderID"):
-                order_id = response.orderID
 
             return OrderResult(
                 success=True,
                 order_id=order_id,
                 message="Order placed successfully",
+                filled_amount=taking_amount,
+                shares_filled=shares_filled,
+                usdc_amount=usdc_amount,
+                average_price=avg_price,
             )
         except Exception as e:
             logger.error(
@@ -321,6 +349,94 @@ class PolymarketClient:
                 token_id=token_id,
                 side=side,
                 amount_usd=amount_usd,
+                error=str(e),
+            )
+            return OrderResult(
+                success=False,
+                order_id=None,
+                message=str(e),
+            )
+
+    def sell_shares(
+        self,
+        token_id: str,
+        shares: float,
+        min_price: float = 0.001,
+    ) -> OrderResult:
+        """
+        Sell an exact number of shares (for closing positions).
+
+        Args:
+            token_id: The token ID to sell
+            shares: Exact number of shares to sell
+            min_price: Minimum price to accept (default: 0.1%)
+
+        Returns:
+            OrderResult with success status and details
+        """
+        if not self._authenticated:
+            return OrderResult(
+                success=False,
+                order_id=None,
+                message="Not authenticated",
+            )
+
+        try:
+            # Get current best bid
+            orderbook = self.client.get_order_book(token_id)
+            if hasattr(orderbook, 'bids') and orderbook.bids:
+                price = max(float(orderbook.bids[0].price), min_price)
+            else:
+                price = min_price
+
+            # Use limit order to sell exact shares
+            order_args = OrderArgs(
+                token_id=token_id,
+                price=price,
+                size=shares,
+                side=SELL,
+            )
+            signed_order = self.client.create_order(order_args)
+            response: Any = self.client.post_order(signed_order, OrderType.GTC)  # type: ignore[arg-type]
+
+            # Parse response
+            order_id: str | None = None
+            taking_amount = 0.0
+            making_amount = 0.0
+
+            if isinstance(response, dict):
+                order_id = response.get("orderID")
+                taking_amount = float(response.get("takingAmount", 0))
+                making_amount = float(response.get("makingAmount", 0))
+
+            # For SELL: makingAmount=shares sold, takingAmount=USDC received
+            shares_filled = making_amount
+            usdc_received = taking_amount
+            avg_price = usdc_received / shares_filled if shares_filled > 0 else 0.0
+
+            logger.info(
+                "Shares sold",
+                token_id=token_id,
+                requested_shares=shares,
+                shares_filled=shares_filled,
+                usdc_received=usdc_received,
+                avg_price=avg_price,
+            )
+
+            return OrderResult(
+                success=True,
+                order_id=order_id,
+                message=f"Sold {shares_filled} shares",
+                filled_amount=taking_amount,
+                shares_filled=shares_filled,
+                usdc_amount=usdc_received,
+                average_price=avg_price,
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to sell shares",
+                token_id=token_id,
+                shares=shares,
                 error=str(e),
             )
             return OrderResult(
