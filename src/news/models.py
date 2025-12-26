@@ -39,6 +39,11 @@ class NewsArticle(BaseModel):
     image_url: str = ""
 
     @property
+    def source(self) -> str:
+        """Get source name (alias for source_name)."""
+        return self.source_name
+
+    @property
     def text_for_analysis(self) -> str:
         """Get combined text for LLM analysis."""
         parts = [self.title]
