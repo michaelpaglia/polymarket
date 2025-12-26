@@ -338,52 +338,78 @@ class SignalAnalyzer:
             signal = signal_lookup.get(market.condition_id)
 
             if sentiment and sentiment.confidence >= 0.5:
-                # Calculate edge: X sentiment vs market price
-                x_probability = sentiment.sentiment_score  # What Twitter thinks
-                market_price = market.yes_price  # Current market price for YES
+                # REALISTIC EDGE CALCULATION
+                # Don't compare X "probability" to market price directly - that's not rigorous
+                # Instead: use X as a DIRECTIONAL signal with small edge assumptions
 
-                edge = x_probability - market_price  # Positive = X more bullish than market
-                edge_pct = abs(edge) * 100
+                market_price = market.yes_price
+                x_direction = sentiment.sentiment  # "bullish", "bearish", "neutral"
 
-                # Log edge detection
+                # Estimate realistic edge based on signal quality
+                # Base edge: 3-5% for typical signal, up to 10% for high-quality
+                base_edge = 0.03  # 3% base edge
+
+                # Quality multipliers (conservative)
+                if sentiment.breaking_news_detected:
+                    base_edge = 0.08  # 8% edge for breaking news
+                elif sentiment.velocity_score >= 0.7:
+                    base_edge = 0.06  # 6% edge for velocity spike
+                elif sentiment.influencer_weight >= 0.7:
+                    base_edge = 0.05  # 5% edge for influencer activity
+                elif sentiment.discussion_volume == "high":
+                    base_edge = 0.04  # 4% edge for high volume
+
+                # Determine direction
+                if x_direction == "bullish" and market_price < 0.5:
+                    # X bullish, market low - potential upside
+                    direction = SignalDirection.YES
+                    realistic_edge = base_edge
+                elif x_direction == "bearish" and market_price > 0.5:
+                    # X bearish, market high - potential downside
+                    direction = SignalDirection.NO
+                    realistic_edge = base_edge
+                elif x_direction == "bullish" and market_price > 0.8:
+                    # X bullish but market already priced in - skip
+                    direction = SignalDirection.HOLD
+                    realistic_edge = 0
+                elif x_direction == "bearish" and market_price < 0.2:
+                    # X bearish but market already priced in - skip
+                    direction = SignalDirection.HOLD
+                    realistic_edge = 0
+                else:
+                    direction = SignalDirection.HOLD
+                    realistic_edge = 0
+
+                # Log with realistic numbers
                 logger.info(
-                    f"Edge detected: X={x_probability:.0%} vs Market={market_price:.0%} = {edge:+.0%}",
+                    f"X signal: {x_direction} (confidence={sentiment.confidence:.0%}) | "
+                    f"Market={market_price:.1%} | Edge={realistic_edge:.0%}",
                     market=market.question[:50],
-                    sentiment=sentiment.sentiment,
-                    volume=sentiment.discussion_volume,
+                    breaking=sentiment.breaking_news_detected,
+                    velocity=sentiment.velocity_score,
                 )
 
-                if signal:
-                    # Enhance existing signal
-                    if abs(edge) >= 0.1:  # At least 10% discrepancy
-                        # Boost confidence if sentiment aligns with signal direction
-                        if (signal.direction == SignalDirection.YES and edge > 0) or \
-                           (signal.direction == SignalDirection.NO and edge < 0):
-                            # Sentiment confirms signal - boost confidence
-                            signal.confidence = min(1.0, signal.confidence + 0.1)
-                            signal.reasoning += f" [X CONFIRMS: {edge_pct:.0f}% edge, {sentiment.discussion_volume} volume]"
-                        elif (signal.direction == SignalDirection.YES and edge < -0.1) or \
-                             (signal.direction == SignalDirection.NO and edge > 0.1):
-                            # Sentiment contradicts signal - reduce confidence
-                            signal.confidence = max(0.0, signal.confidence - 0.2)
-                            signal.reasoning += f" [X CONTRADICTS: market sentiment differs]"
-
+                if signal and direction != SignalDirection.HOLD:
+                    # Enhance existing signal if X confirms direction
+                    if signal.direction == direction:
+                        signal.confidence = min(0.95, signal.confidence + realistic_edge)
+                        signal.reasoning += f" [X {x_direction}: +{realistic_edge:.0%} edge]"
                     enhanced_signals.append(signal)
 
-                elif abs(edge) >= 0.15:  # 15%+ edge with no news signal - pure sentiment play
-                    # Create new signal based purely on sentiment edge
-                    direction = SignalDirection.YES if edge > 0 else SignalDirection.NO
-                    target_token_id = market.yes_token_id if edge > 0 else market.no_token_id
+                elif direction != SignalDirection.HOLD and realistic_edge >= 0.03:
+                    # Create signal from X sentiment (only if we have edge)
+                    target_token_id = market.yes_token_id if direction == SignalDirection.YES else market.no_token_id
 
                     new_signal = TradingSignal(
                         signal_id=str(uuid.uuid4()),
                         article_id=article.id,
                         market_id=market.condition_id,
                         direction=direction,
-                        confidence=min(0.9, 0.5 + abs(edge)),  # Higher edge = higher confidence
-                        reasoning=f"[X SENTIMENT EDGE] {edge_pct:.0f}% discrepancy. "
-                                  f"X sentiment: {sentiment.sentiment} ({x_probability:.0%}), "
-                                  f"Market: {market_price:.0%}. {sentiment.reasoning}",
+                        confidence=0.6 + realistic_edge,  # Conservative confidence
+                        reasoning=f"[X {x_direction.upper()}] {realistic_edge:.0%} edge. "
+                                  f"{'BREAKING ' if sentiment.breaking_news_detected else ''}"
+                                  f"{'VELOCITY ' if sentiment.velocity_score >= 0.7 else ''}"
+                                  f"{sentiment.reasoning[:80]}",
                         market_question=market.question,
                         current_yes_price=market.yes_price,
                         current_no_price=market.no_price,
@@ -392,8 +418,8 @@ class SignalAnalyzer:
                     )
                     enhanced_signals.append(new_signal)
                     logger.info(
-                        f"New sentiment-only signal: {direction.value} on {market.question[:40]}...",
-                        edge=f"{edge:+.0%}",
+                        f"X sentiment trade: {direction.value} | Edge={realistic_edge:.0%}",
+                        market=market.question[:40],
                     )
 
             elif signal:
