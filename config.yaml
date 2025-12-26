@@ -1,0 +1,37 @@
+# Trading mode
+paper_trading: true  # Start with paper trading!
+
+# News sources
+news:
+  poll_interval_seconds: 60
+  sources:
+    - newsapi
+    - gnews
+  # NO hardcoded keywords - we fetch broad news and use LLM to match
+  # against active Polymarket markets dynamically
+
+# Market matching - SHORT TERM ONLY for testing
+markets:
+  refresh_interval_minutes: 15
+  min_liquidity_usd: 500  # Lower threshold to get more markets
+  max_days_to_resolution: 30  # Markets ending within 30 days
+  top_k_matches: 5
+
+# Signal generation
+signals:
+  llm_provider: "google"
+  model: "gemini-3-flash-preview"
+  confidence_threshold: 0.7
+  require_multi_source: true
+
+# Risk management
+risk:
+  max_position_per_market_usd: 100
+  max_portfolio_exposure_usd: 500
+  max_daily_trades: 20
+  stop_loss_pct: 0.25
+
+# Logging
+logging:
+  level: "INFO"
+  file: "logs/bot.log"
