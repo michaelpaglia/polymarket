@@ -31,21 +31,69 @@ class SentimentAnalysis:
     influencer_activity: bool = False
     sentiment_shift: Optional[str] = None  # "strengthening", "weakening", "stable"
 
+    # NOVEL EDGE INDICATORS
+    velocity_score: float = 0.0  # 0-1, how fast is discussion accelerating
+    influencer_weight: float = 0.0  # 0-1, are big accounts talking or just randoms
+    contrarian_signal: bool = False  # True if sentiment is extreme (potential reversal)
+    smart_money_direction: Optional[str] = None  # What are "experts" saying vs crowd
+
     @property
     def is_strong_signal(self) -> bool:
         """Check if sentiment provides a strong trading signal."""
-        return (
-            self.confidence >= 0.7
+        # Strong if: high confidence + volume + not neutral
+        base_strong = (
+            self.confidence >= 0.6
             and self.discussion_volume in ("medium", "high")
-            and abs(self.sentiment_score - 0.5) >= 0.2  # Not neutral
+            and abs(self.sentiment_score - 0.5) >= 0.15
         )
+
+        # Boost if: velocity spike OR major influencer activity
+        velocity_boost = self.velocity_score >= 0.7
+        influencer_boost = self.influencer_weight >= 0.7
+
+        return base_strong or velocity_boost or influencer_boost
+
+    @property
+    def edge_multiplier(self) -> float:
+        """
+        Calculate edge multiplier based on signal quality.
+
+        Higher = more confident in the edge.
+        """
+        multiplier = 1.0
+
+        # Velocity spike = information is fresh
+        if self.velocity_score >= 0.8:
+            multiplier += 0.3
+        elif self.velocity_score >= 0.5:
+            multiplier += 0.1
+
+        # Influencer activity = higher signal quality
+        if self.influencer_weight >= 0.8:
+            multiplier += 0.2
+        elif self.influencer_weight >= 0.5:
+            multiplier += 0.1
+
+        # Breaking news = maximum edge
+        if self.breaking_news_detected:
+            multiplier += 0.5
+
+        # Sentiment shift = momentum
+        if self.sentiment_shift == "strengthening":
+            multiplier += 0.1
+
+        # Contrarian discount (extreme sentiment often reverses)
+        if self.contrarian_signal:
+            multiplier -= 0.2
+
+        return min(2.0, max(0.5, multiplier))
 
     @property
     def direction(self) -> str:
         """Get trading direction based on sentiment."""
-        if self.sentiment_score >= 0.6:
+        if self.sentiment_score >= 0.55:
             return "YES"
-        elif self.sentiment_score <= 0.4:
+        elif self.sentiment_score <= 0.45:
             return "NO"
         return "HOLD"
 
@@ -102,27 +150,33 @@ class XSentimentAnalyzer:
 MARKET QUESTION: {market_question}
 {context_text}
 
-Analyze the real-time X sentiment and provide:
+Analyze the real-time X sentiment. I need EDGE DETECTION - things that would help predict market moves:
 
-1. Overall sentiment - Are people on X bullish (think YES will happen) or bearish (think NO)?
-2. Discussion volume - How much is this being discussed right now?
-3. Key opinions - What are influential accounts or popular tweets saying?
-4. Breaking news - Is there any breaking news on X about this topic?
-5. Influencer activity - Have any major accounts (politicians, celebrities, experts) posted about this?
-6. Sentiment shift - Is sentiment strengthening, weakening, or stable compared to earlier?
+1. **Sentiment**: Are people bullish (YES) or bearish (NO)?
+2. **Volume**: How much discussion right now?
+3. **VELOCITY**: Is discussion ACCELERATING? (sudden spike in last 1-2 hours = something happened)
+4. **INFLUENCER WEIGHT**: Are big accounts talking (politicians, journalists, celebrities) or just random users?
+5. **Breaking news**: Any news that JUST broke on X (not yet in mainstream media)?
+6. **Sentiment shift**: Is sentiment strengthening or weakening vs earlier today?
+7. **Contrarian check**: Is sentiment EXTREMELY one-sided (>90%)? That often means reversal coming.
+8. **Smart money**: What are "expert" accounts saying vs the general crowd?
 
 Return JSON:
 {{
     "topic": "extracted topic",
     "sentiment": "bullish" or "bearish" or "neutral",
-    "sentiment_score": 0.0-1.0,
+    "sentiment_score": 0.0-1.0 (what probability does X crowd imply?),
     "discussion_volume": "low" or "medium" or "high",
     "key_opinions": ["opinion 1", "opinion 2"],
     "confidence": 0.0-1.0,
     "reasoning": "explanation",
     "breaking_news_detected": true/false,
     "influencer_activity": true/false,
-    "sentiment_shift": "strengthening" or "weakening" or "stable"
+    "sentiment_shift": "strengthening" or "weakening" or "stable",
+    "velocity_score": 0.0-1.0 (0=stable, 1=exploding right now),
+    "influencer_weight": 0.0-1.0 (0=only randoms, 1=major accounts engaged),
+    "contrarian_signal": true/false (true if >90% one-sided),
+    "smart_money_direction": "bullish" or "bearish" or "neutral" or null
 }}"""
 
             response = await client.post(
@@ -359,6 +413,11 @@ Return empty array if no breaking news found."""
                 breaking_news_detected=data.get("breaking_news_detected", False),
                 influencer_activity=data.get("influencer_activity", False),
                 sentiment_shift=data.get("sentiment_shift"),
+                # Novel edge indicators
+                velocity_score=float(data.get("velocity_score", 0.0)),
+                influencer_weight=float(data.get("influencer_weight", 0.0)),
+                contrarian_signal=data.get("contrarian_signal", False),
+                smart_money_direction=data.get("smart_money_direction"),
             )
         except Exception as e:
             logger.warning("Failed to parse sentiment response", error=str(e))
