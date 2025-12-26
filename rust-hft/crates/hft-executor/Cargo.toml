@@ -1,0 +1,23 @@
+[package]
+name = "hft-executor"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+hft-core.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+ethers.workspace = true
+alloy-primitives.workspace = true
+sha3.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+flume.workspace = true
+dashmap.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+rust_decimal.workspace = true
+chrono.workspace = true
+uuid.workspace = true
