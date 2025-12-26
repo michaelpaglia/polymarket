@@ -85,22 +85,38 @@ class MarketIndexer:
         Returns:
             Market object or None if parsing fails
         """
+        import json as json_module
+
         try:
-            # Parse outcomes
+            # Parse outcomes from clobTokenIds and outcome prices
             outcomes = []
-            tokens = data.get("tokens", [])
-            for token in tokens:
+            clob_token_ids_str = data.get("clobTokenIds", "[]")
+            outcome_prices_str = data.get("outcomePrices", "[]")
+            outcomes_str = data.get("outcomes", "[]")
+
+            try:
+                clob_token_ids = json_module.loads(clob_token_ids_str) if isinstance(clob_token_ids_str, str) else clob_token_ids_str
+                outcome_prices = json_module.loads(outcome_prices_str) if isinstance(outcome_prices_str, str) else outcome_prices_str
+                outcome_names = json_module.loads(outcomes_str) if isinstance(outcomes_str, str) else outcomes_str
+            except (json_module.JSONDecodeError, TypeError):
+                clob_token_ids = []
+                outcome_prices = []
+                outcome_names = []
+
+            for i, token_id in enumerate(clob_token_ids):
+                price = float(outcome_prices[i]) if i < len(outcome_prices) else 0.0
+                outcome_name = outcome_names[i] if i < len(outcome_names) else f"Outcome {i}"
                 outcomes.append(
                     MarketOutcome(
-                        token_id=token.get("token_id", ""),
-                        outcome=token.get("outcome", ""),
-                        price=float(token.get("price", 0.0)),
+                        token_id=str(token_id),
+                        outcome=outcome_name,
+                        price=price,
                     )
                 )
 
-            # Parse end date
+            # Parse end date (API uses endDate not end_date_iso)
             end_date = None
-            end_date_str = data.get("end_date_iso")
+            end_date_str = data.get("endDate")
             if end_date_str:
                 try:
                     end_date = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
@@ -113,17 +129,17 @@ class MarketIndexer:
                 tags = [tags]
 
             return Market(
-                condition_id=data.get("condition_id", ""),
-                question_id=data.get("question_id", ""),
+                condition_id=data.get("conditionId", ""),  # API uses conditionId
+                question_id=data.get("questionID", ""),  # API uses questionID
                 slug=data.get("slug", ""),
                 question=data.get("question", ""),
                 description=data.get("description", ""),
                 category=data.get("category", ""),
                 tags=tags,
                 outcomes=outcomes,
-                liquidity=float(data.get("liquidity", 0)),
-                volume_24h=float(data.get("volume_24hr", 0)),
-                volume_total=float(data.get("volume", 0)),
+                liquidity=float(data.get("liquidityNum", data.get("liquidity", 0))),
+                volume_24h=float(data.get("volume24hr", 0)),
+                volume_total=float(data.get("volumeNum", data.get("volume", 0))),
                 end_date=end_date,
                 active=data.get("active", True),
                 closed=data.get("closed", False),
