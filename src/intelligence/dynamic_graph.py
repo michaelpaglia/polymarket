@@ -149,42 +149,92 @@ class DynamicKnowledgeGraph:
         """Extract named entities from text using patterns and heuristics."""
         entities = []
 
+        # Garbage phrases to filter out
+        garbage_phrases = {
+            'will the', 'in the', 'by the', 'of the', 'on the', 'at the',
+            'et otherwise', 'otherwise the', 'the market', 'this market',
+            'market will', 'will resolve', 'resolve yes', 'resolve no',
+            'pm et', 'am et', 'open market', 'market committee',
+            'economic research', 'economic analysis', 'national bureau',
+            'federal open', 'reserve board', 'limited inc', 'coinbase',
+            'usdtusd', 'the national', 'if the', 'for the', 'to the',
+            'and the', 'from the', 'with the', 'be the', 'is the',
+        }
+
         # Common patterns for prediction market questions
         patterns = {
-            # People with titles
-            r'\b(President [A-Z][a-z]+(?: [A-Z][a-z]+)?)\b': 'person',
-            r'\b(Senator [A-Z][a-z]+(?: [A-Z][a-z]+)?)\b': 'person',
-            r'\b(Governor [A-Z][a-z]+(?: [A-Z][a-z]+)?)\b': 'person',
-            r'\b(CEO [A-Z][a-z]+(?: [A-Z][a-z]+)?)\b': 'person',
-            r'\b(RFK(?:\s+Jr\.?)?)\b': 'person',
-            r'\b(Trump)\b': 'person',
-            r'\b(Biden)\b': 'person',
-            r'\b(Musk)\b': 'person',
-            r'\b(Elon Musk)\b': 'person',
+            # People - specific names
+            r'\b(Donald Trump|Trump)\b': 'person',
+            r'\b(Joe Biden|Biden)\b': 'person',
+            r'\b(Elon Musk|Musk)\b': 'person',
+            r'\b(RFK Jr\.?|Robert Kennedy)\b': 'person',
+            r'\b(Putin|Vladimir Putin)\b': 'person',
+            r'\b(Xi Jinping|Xi)\b': 'person',
+            r'\b(Zelensky|Zelenskyy)\b': 'person',
+            r'\b(Netanyahu)\b': 'person',
+            r'\b(Khamenei)\b': 'person',
+            r'\b(Kim Jong[- ]?Un)\b': 'person',
+            r'\b(Taylor Swift)\b': 'person',
+            r'\b(LeBron James|LeBron)\b': 'person',
+            r'\b(Patrick Mahomes|Mahomes)\b': 'person',
+            r'\b(Aaron Rodgers|Rodgers)\b': 'person',
+
+            # Politicians with titles
+            r'\b(President [A-Z][a-z]+)\b': 'person',
+            r'\b(Senator [A-Z][a-z]+)\b': 'person',
+            r'\b(Governor [A-Z][a-z]+)\b': 'person',
 
             # Companies/Organizations
-            r'\b(Tesla|SpaceX|OpenAI|Google|Apple|Microsoft|Amazon|Meta|Nvidia)\b': 'company',
+            r'\b(Tesla|SpaceX|OpenAI|Google|Apple|Microsoft|Amazon|Meta|Nvidia|Netflix|Disney)\b': 'company',
             r'\b(Federal Reserve|Fed|FOMC)\b': 'organization',
-            r'\b(SEC|FDA|EPA|FTC|DOJ)\b': 'organization',
-            r'\b(NATO|UN|WHO|IMF)\b': 'organization',
+            r'\b(SEC|FDA|EPA|FTC|DOJ|FBI|CIA|NSA)\b': 'organization',
+            r'\b(NATO|United Nations|UN|WHO|IMF|World Bank)\b': 'organization',
+            r'\b(Democratic Party|Republican Party|Democrats|Republicans|GOP)\b': 'organization',
 
             # Crypto/Finance
-            r'\b(Bitcoin|BTC|Ethereum|ETH|Solana|SOL)\b': 'asset',
-            r'\b(S&P 500|Dow Jones|Nasdaq|NYSE)\b': 'index',
+            r'\b(Bitcoin|BTC)\b': 'asset',
+            r'\b(Ethereum|ETH)\b': 'asset',
+            r'\b(Solana|SOL)\b': 'asset',
+            r'\b(XRP|Ripple)\b': 'asset',
+            r'\b(Dogecoin|DOGE)\b': 'asset',
+            r'\b(S&P ?500|SPX)\b': 'index',
+            r'\b(Dow Jones|DJIA)\b': 'index',
+            r'\b(Nasdaq|QQQ)\b': 'index',
 
-            # Sports teams/leagues
-            r'\b(NFL|NBA|MLB|NHL|NCAA|FIFA|UFC)\b': 'sports',
-            r'\b(Super Bowl|World Series|Stanley Cup|World Cup)\b': 'event',
+            # Sports teams - NFL
+            r'\b(Chiefs|49ers|Eagles|Cowboys|Bills|Ravens|Lions|Packers|Vikings|Bears|Dolphins|Jets|Patriots|Broncos|Raiders|Chargers|Bengals|Browns|Steelers|Titans|Colts|Jaguars|Texans|Saints|Buccaneers|Falcons|Panthers|Cardinals|Rams|Seahawks|Commanders|Giants)\b': 'sports_team',
+            r'\b(NFL|Super Bowl)\b': 'sports',
+            r'\b(NBA|Finals)\b': 'sports',
+            r'\b(MLB|World Series)\b': 'sports',
+            r'\b(NHL|Stanley Cup)\b': 'sports',
+            r'\b(UFC|MMA)\b': 'sports',
+            r'\b(NFC|AFC)\b': 'sports',
 
             # Countries/Locations
-            r'\b(United States|U\.S\.|USA|China|Russia|Ukraine|Israel|Iran|North Korea)\b': 'location',
+            r'\b(United States|U\.S\.|USA|America)\b': 'location',
+            r'\b(China|Chinese)\b': 'location',
+            r'\b(Russia|Russian)\b': 'location',
+            r'\b(Ukraine|Ukrainian)\b': 'location',
+            r'\b(Israel|Israeli)\b': 'location',
+            r'\b(Iran|Iranian)\b': 'location',
+            r'\b(North Korea|DPRK)\b': 'location',
+            r'\b(Taiwan)\b': 'location',
+            r'\b(Gaza|Palestine|Palestinian)\b': 'location',
+            r'\b(Syria|Syrian)\b': 'location',
 
             # Events/Topics
-            r'\b(recession|inflation|interest rate|rate cut|rate hike)\b': 'topic',
-            r'\b(election|impeachment|indictment|trial|verdict)\b': 'event',
-            r'\b(vaccine|COVID|pandemic|outbreak)\b': 'topic',
+            r'\b(recession)\b': 'topic',
+            r'\b(inflation)\b': 'topic',
+            r'\b(interest rate|rate cut|rate hike)\b': 'topic',
+            r'\b(election|midterms|primary)\b': 'event',
+            r'\b(impeachment|indictment|trial|verdict|conviction)\b': 'event',
+            r'\b(vaccine|COVID|pandemic|coronavirus)\b': 'topic',
             r'\b(war|invasion|conflict|ceasefire)\b': 'event',
-            r'\b(AI|artificial intelligence|AGI)\b': 'topic',
+            r'\b(AI|artificial intelligence|AGI|GPT)\b': 'topic',
+            r'\b(nuclear|nuke)\b': 'topic',
+            r'\b(tariff|trade war)\b': 'topic',
+            r'\b(shutdown|government shutdown)\b': 'event',
+            r'\b(debt ceiling)\b': 'topic',
         }
 
         for pattern, entity_type in patterns.items():
@@ -193,27 +243,16 @@ class DynamicKnowledgeGraph:
                 # Normalize the match
                 name = match.strip()
                 if len(name) >= 2:  # Skip single characters
-                    entities.append((name, entity_type))
-
-        # Also try to extract generic proper nouns (capitalized words)
-        words = text.split()
-        for i, word in enumerate(words):
-            # Look for capitalized words that might be names
-            if word and word[0].isupper() and len(word) > 2:
-                # Check if it's part of a name (followed by another capitalized word)
-                if i + 1 < len(words) and words[i + 1] and words[i + 1][0].isupper():
-                    potential_name = f"{word} {words[i + 1]}"
-                    # Clean up punctuation
-                    potential_name = re.sub(r'[^\w\s]', '', potential_name).strip()
-                    if len(potential_name) > 4 and potential_name not in ['Will The', 'In The', 'By The']:
-                        entities.append((potential_name, 'unknown'))
+                    # Filter garbage
+                    if name.lower() not in garbage_phrases:
+                        entities.append((name, entity_type))
 
         # Deduplicate while preserving order
         seen = set()
         unique_entities = []
         for entity in entities:
             key = entity[0].lower()
-            if key not in seen:
+            if key not in seen and key not in garbage_phrases:
                 seen.add(key)
                 unique_entities.append(entity)
 

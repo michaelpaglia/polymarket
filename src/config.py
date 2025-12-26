@@ -57,8 +57,13 @@ class MarketSettings(BaseSettings):
 class SignalSettings(BaseSettings):
     """Signal generation settings."""
 
-    confidence_threshold: float = 0.7
-    require_multi_source: bool = True
+    # Threshold aligned with signal model:
+    # - 0.10-0.20: Moderate signal (25% position)
+    # - 0.20-0.35: Good signal (50% position)
+    # - 0.35-0.50: Strong signal (75% position)
+    # - 0.50+: Very strong signal (100% position)
+    confidence_threshold: float = 0.10
+    require_multi_source: bool = False  # X sentiment is enough
 
 
 class RiskSettings(BaseSettings):
