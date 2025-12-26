@@ -8,6 +8,7 @@ from typing import Optional
 from src.config import NewsSettings
 from src.news.base import NewsSource
 from src.news.gnews import GNewsSource
+from src.news.grok import GrokNewsSource
 from src.news.models import NewsArticle
 from src.news.newsapi import NewsAPISource
 from src.utils.logging import get_logger
@@ -49,6 +50,10 @@ class NewsAggregator:
         if "gnews" in self.settings.sources and self.settings.gnews_api_key:
             self._sources.append(GNewsSource(self.settings.gnews_api_key))
             logger.info("Initialized GNews source")
+
+        if "grok" in self.settings.sources and self.settings.grok_api_key:
+            self._sources.append(GrokNewsSource(self.settings.grok_api_key))
+            logger.info("Initialized Grok/X source")
 
         if not self._sources:
             logger.warning("No news sources configured!")
