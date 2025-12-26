@@ -402,13 +402,24 @@ Return empty array if no breaking news found."""
 
             data = json.loads(content)
 
+            # Grok tends to be overconfident - scale down confidence
+            raw_confidence = float(data.get("confidence", 0.5))
+            # Apply sigmoid-like dampening: high values get reduced more
+            # 0.75 -> ~0.55, 0.9 -> ~0.65, 0.5 -> ~0.45
+            calibrated_confidence = raw_confidence * 0.6 + 0.1  # Max ~0.7
+
+            # Also dampen sentiment score to be more realistic
+            raw_sentiment = float(data.get("sentiment_score", 0.5))
+            # Pull towards 0.5 (reduce extremes)
+            calibrated_sentiment = 0.5 + (raw_sentiment - 0.5) * 0.7
+
             return SentimentAnalysis(
                 topic=data.get("topic", ""),
                 sentiment=data.get("sentiment", "neutral"),
-                sentiment_score=float(data.get("sentiment_score", 0.5)),
+                sentiment_score=calibrated_sentiment,
                 discussion_volume=data.get("discussion_volume", "low"),
                 key_opinions=data.get("key_opinions", []),
-                confidence=float(data.get("confidence", 0.5)),
+                confidence=calibrated_confidence,
                 reasoning=data.get("reasoning", ""),
                 breaking_news_detected=data.get("breaking_news_detected", False),
                 influencer_activity=data.get("influencer_activity", False),

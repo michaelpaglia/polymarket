@@ -51,11 +51,18 @@ class TradingSignal(BaseModel):
 
     @property
     def is_actionable(self) -> bool:
-        """Check if this signal should result in a trade."""
+        """Check if this signal should result in a trade.
+
+        Confidence threshold aligned with signal model:
+        - 0.10+: Moderate signal, 25% position
+        - 0.20+: Good signal, 50% position
+        - 0.35+: Strong signal, 75% position
+        - 0.50+: Very strong signal, 100% position
+        """
         return (
             self.is_valid
             and self.direction != SignalDirection.HOLD
-            and self.confidence > 0.5
+            and self.confidence >= 0.10  # Aligned with signal_model threshold
             and self.suggested_size_usd > 0
         )
 

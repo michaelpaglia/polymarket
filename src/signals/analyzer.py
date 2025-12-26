@@ -17,6 +17,7 @@ from src.signals.models import (
     TradingSignal,
 )
 from src.signals.sentiment import XSentimentAnalyzer, SentimentAnalysis
+from src.signals.signal_model import MarketState, XSignal, SignalVector, build_signal
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -293,10 +294,14 @@ class SignalAnalyzer:
         article: NewsArticle,
     ) -> list[TradingSignal]:
         """
-        Enhance signals with X/Twitter sentiment edge detection.
+        Enhance signals with X/Twitter sentiment using formal signal model.
 
-        THE EDGE: Find discrepancy between X sentiment and market price.
-        If Twitter thinks probability is 70% but market is at 50%, that's a 20% edge.
+        Uses SignalVector to compute:
+        - Freshness: How fresh is this information? (velocity, breaking news, decay)
+        - Quality: How reliable is the signal? (influencers, volume, not contrarian)
+        - Disagreement: How much does X disagree with market? (edge opportunity)
+
+        Combined: signal_score = freshness × quality × disagreement
 
         Args:
             signals: Initial signals from news analysis
@@ -304,7 +309,7 @@ class SignalAnalyzer:
             article: The news article
 
         Returns:
-            Enhanced signals with sentiment edge incorporated
+            Enhanced signals with formal signal scores
         """
         if not self._sentiment_analyzer:
             return signals
@@ -328,7 +333,15 @@ class SignalAnalyzer:
             logger.warning("Sentiment analysis failed, using news signals only", error=str(e))
             return signals
 
-        # Enhance signals with sentiment edge
+        # Calculate news age for freshness decay
+        news_age_minutes = 0.0
+        if article.published_at:
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc)
+            delta = now - article.published_at
+            news_age_minutes = delta.total_seconds() / 60.0
+
+        # Enhance signals with formal signal model
         enhanced_signals = []
         for i, match in enumerate(matches):
             market = match.market
@@ -337,90 +350,107 @@ class SignalAnalyzer:
             # Get existing signal or create new one
             signal = signal_lookup.get(market.condition_id)
 
-            if sentiment and sentiment.confidence >= 0.5:
-                # REALISTIC EDGE CALCULATION
-                # Don't compare X "probability" to market price directly - that's not rigorous
-                # Instead: use X as a DIRECTIONAL signal with small edge assumptions
+            # Only process if there's actual discussion (not low volume)
+            if sentiment and sentiment.discussion_volume in ("medium", "high"):
+                # Calculate hours to resolution
+                hours_to_resolution = None
+                if market.end_date:
+                    from datetime import datetime, timezone
+                    now = datetime.now(timezone.utc)
+                    delta = market.end_date - now
+                    hours_to_resolution = max(0, delta.total_seconds() / 3600)
 
-                market_price = market.yes_price
-                x_direction = sentiment.sentiment  # "bullish", "bearish", "neutral"
-
-                # Estimate realistic edge based on signal quality
-                # Base edge: 3-5% for typical signal, up to 10% for high-quality
-                base_edge = 0.03  # 3% base edge
-
-                # Quality multipliers (conservative)
-                if sentiment.breaking_news_detected:
-                    base_edge = 0.08  # 8% edge for breaking news
-                elif sentiment.velocity_score >= 0.7:
-                    base_edge = 0.06  # 6% edge for velocity spike
-                elif sentiment.influencer_weight >= 0.7:
-                    base_edge = 0.05  # 5% edge for influencer activity
-                elif sentiment.discussion_volume == "high":
-                    base_edge = 0.04  # 4% edge for high volume
-
-                # Determine direction
-                if x_direction == "bullish" and market_price < 0.5:
-                    # X bullish, market low - potential upside
-                    direction = SignalDirection.YES
-                    realistic_edge = base_edge
-                elif x_direction == "bearish" and market_price > 0.5:
-                    # X bearish, market high - potential downside
-                    direction = SignalDirection.NO
-                    realistic_edge = base_edge
-                elif x_direction == "bullish" and market_price > 0.8:
-                    # X bullish but market already priced in - skip
-                    direction = SignalDirection.HOLD
-                    realistic_edge = 0
-                elif x_direction == "bearish" and market_price < 0.2:
-                    # X bearish but market already priced in - skip
-                    direction = SignalDirection.HOLD
-                    realistic_edge = 0
-                else:
-                    direction = SignalDirection.HOLD
-                    realistic_edge = 0
-
-                # Log with realistic numbers
-                logger.info(
-                    f"X signal: {x_direction} (confidence={sentiment.confidence:.0%}) | "
-                    f"Market={market_price:.1%} | Edge={realistic_edge:.0%}",
-                    market=market.question[:50],
-                    breaking=sentiment.breaking_news_detected,
-                    velocity=sentiment.velocity_score,
+                # Build formal signal model
+                market_state = MarketState(
+                    condition_id=market.condition_id,
+                    question=market.question,
+                    yes_price=market.yes_price,
+                    no_price=market.no_price,
+                    liquidity_usd=market.liquidity or 0.0,
+                    hours_to_resolution=hours_to_resolution,
                 )
 
-                if signal and direction != SignalDirection.HOLD:
-                    # Enhance existing signal if X confirms direction
-                    if signal.direction == direction:
-                        signal.confidence = min(0.95, signal.confidence + realistic_edge)
-                        signal.reasoning += f" [X {x_direction}: +{realistic_edge:.0%} edge]"
-                    enhanced_signals.append(signal)
+                x_signal = XSignal(
+                    sentiment=sentiment.sentiment,
+                    velocity=sentiment.velocity_score,
+                    influencer_weight=sentiment.influencer_weight,
+                    volume=sentiment.discussion_volume,
+                    breaking_news=sentiment.breaking_news_detected,
+                    contrarian=sentiment.contrarian_signal,
+                    reasoning=sentiment.reasoning,
+                )
 
-                elif direction != SignalDirection.HOLD and realistic_edge >= 0.03:
-                    # Create signal from X sentiment (only if we have edge)
-                    target_token_id = market.yes_token_id if direction == SignalDirection.YES else market.no_token_id
+                # Build the signal vector
+                signal_vec = build_signal(market_state, x_signal, news_age_minutes)
 
-                    new_signal = TradingSignal(
-                        signal_id=str(uuid.uuid4()),
-                        article_id=article.id,
-                        market_id=market.condition_id,
-                        direction=direction,
-                        confidence=0.6 + realistic_edge,  # Conservative confidence
-                        reasoning=f"[X {x_direction.upper()}] {realistic_edge:.0%} edge. "
-                                  f"{'BREAKING ' if sentiment.breaking_news_detected else ''}"
-                                  f"{'VELOCITY ' if sentiment.velocity_score >= 0.7 else ''}"
-                                  f"{sentiment.reasoning[:80]}",
-                        market_question=market.question,
-                        current_yes_price=market.yes_price,
-                        current_no_price=market.no_price,
-                        target_token_id=target_token_id or "",
-                        article_published_at=article.published_at,
-                    )
-                    enhanced_signals.append(new_signal)
-                    logger.info(
-                        f"X sentiment trade: {direction.value} | Edge={realistic_edge:.0%}",
-                        market=market.question[:40],
-                    )
+                # Log the formal signal components
+                logger.info(
+                    f"Signal: {signal_vec}",
+                    market=market.question[:40],
+                )
+
+                # Check if signal meets threshold
+                if signal_vec.should_trade:
+                    # Map signal direction to SignalDirection enum
+                    if signal_vec.direction == "LONG":
+                        direction = SignalDirection.YES
+                    elif signal_vec.direction == "SHORT":
+                        direction = SignalDirection.NO
+                    else:
+                        direction = SignalDirection.HOLD
+
+                    if signal and direction != SignalDirection.HOLD:
+                        # X sentiment overrides Gemini direction
+                        # (X is our real-time edge, Gemini is often conservative HOLD)
+                        signal.direction = direction
+                        signal.reasoning += (
+                            f" [X={signal_vec.direction} Score={signal_vec.signal_score:.0%} "
+                            f"F={signal_vec.freshness:.0%} Q={signal_vec.quality:.0%} "
+                            f"D={signal_vec.disagreement:.0%}]"
+                        )
+                        signal.confidence = max(signal.confidence, signal_vec.signal_score)
+                        # Set target token based on new direction
+                        if direction == SignalDirection.YES:
+                            signal.target_token_id = market.yes_token_id or ""
+                        else:
+                            signal.target_token_id = market.no_token_id or ""
+                        enhanced_signals.append(signal)
+                        logger.info(
+                            f"X signal: {direction.value} @ {signal_vec.position_size_pct:.0%}",
+                            score=f"{signal_vec.signal_score:.0%}",
+                            market=market.question[:40],
+                        )
+
+                    elif direction != SignalDirection.HOLD:
+                        # Create signal from formal model
+                        target_token_id = market.yes_token_id if direction == SignalDirection.YES else market.no_token_id
+
+                        new_signal = TradingSignal(
+                            signal_id=str(uuid.uuid4()),
+                            article_id=article.id,
+                            market_id=market.condition_id,
+                            direction=direction,
+                            confidence=signal_vec.signal_score,  # Use computed signal score
+                            reasoning=(
+                                f"[{signal_vec.direction}] Score={signal_vec.signal_score:.0%} "
+                                f"[F={signal_vec.freshness:.0%} Q={signal_vec.quality:.0%} "
+                                f"D={signal_vec.disagreement:.0%}] "
+                                f"Size={signal_vec.position_size_pct:.0%}. "
+                                f"{sentiment.reasoning[:50]}"
+                            ),
+                            market_question=market.question,
+                            current_yes_price=market.yes_price,
+                            current_no_price=market.no_price,
+                            target_token_id=target_token_id or "",
+                            article_published_at=article.published_at,
+                        )
+                        enhanced_signals.append(new_signal)
+
+                        logger.info(
+                            f"Trade: {direction.value} @ {signal_vec.position_size_pct:.0%} position",
+                            score=f"{signal_vec.signal_score:.0%}",
+                            market=market.question[:40],
+                        )
 
             elif signal:
                 # No sentiment data, keep original signal
