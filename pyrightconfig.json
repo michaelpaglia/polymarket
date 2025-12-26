@@ -1,0 +1,8 @@
+{
+    "include": ["src"],
+    "exclude": ["**/__pycache__", ".venv"],
+    "reportPrivateImportUsage": "warning",
+    "reportMissingTypeStubs": false,
+    "pythonVersion": "3.10",
+    "typeCheckingMode": "standard"
+}
