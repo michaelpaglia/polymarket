@@ -45,6 +45,26 @@ cd rust-hft && cargo build --release && cd ..
 python scripts/run_all.py
 ```
 
+#### Command Line Options
+
+```bash
+# Paper trading (default)
+python scripts/run_all.py
+
+# Live trading
+python scripts/run_all.py --live
+
+# With EU proxy (for geo-restricted regions)
+python scripts/run_all.py --proxy "host:port:user:pass" --live
+
+# HFT only or sentiment only
+python scripts/run_all.py --hft-only
+python scripts/run_all.py --sentiment-only
+
+# Custom settings
+python scripts/run_all.py --min-liquidity 5000 --hft-balance-pct 0.60
+```
+
 Or run individually:
 ```bash
 # Sentiment bot only
@@ -83,6 +103,27 @@ cd rust-hft && cargo run --release
                         │   (Polygon Network)   │
                         └───────────────────────┘
 ```
+
+## Capital Management
+
+The system automatically manages capital allocation between modules:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    TOTAL BALANCE                        │
+├────────────────────────┬────────────────────────────────┤
+│   50% Sentiment Bot    │        50% HFT Module          │
+│   (Python)             │        (Rust)                  │
+├────────────────────────┼────────────────────────────────┤
+│  • Slower trades       │  • Sub-second trades           │
+│  • Higher conviction   │  • Lower edge per trade        │
+│  • News-driven         │  • Volume-driven               │
+└────────────────────────┴────────────────────────────────┘
+```
+
+- **Dynamic rebalancing**: Balance syncs every 60 seconds
+- **Auto-scaling**: Both modules scale with P&L
+- **Configurable split**: `--hft-balance-pct 0.60` for 60/40
 
 ## Two Trading Strategies
 
@@ -132,10 +173,17 @@ Finds edge through **speed and market inefficiency**:
 ### HFT Module
 - **Low Latency**: Rust with zero-copy parsing (simd-json)
 - **WebSocket Streaming**: Real-time orderbook updates
+- **Auto-Subscribe**: Fetches and subscribes to 500+ markets automatically
 - **Risk Controls**: Circuit breaker, position limits, exposure caps
 - **REST API**: Control via Python client or curl
 - **Prometheus Metrics**: Full observability
 - **Auto-Recovery**: Reconnection and error handling
+
+### Infrastructure
+- **EU Proxy Support**: Residential proxies for geo-restricted regions
+- **Proxy Rotation**: Automatic fallback through proxy list
+- **Balance Sync**: Dynamic 50/50 capital allocation
+- **Position Closing**: `sell_shares()` for exact share liquidation
 
 ## Configuration
 
@@ -161,6 +209,13 @@ GROK_API_KEY=your_xai_key  # Highly recommended
 
 # HFT Settings (Optional)
 HFT_CAPITAL_USD=5000
+HFT_BALANCE_PERCENTAGE=50
+
+# Proxy (Optional - for EU/geo-restricted regions)
+PROXY_HOST=premium.residential-proxy.com
+PROXY_PORT=22226
+PROXY_USER=your_user
+PROXY_PASS=your_pass
 ```
 
 ### config.yaml (Sentiment Bot)
@@ -213,6 +268,7 @@ polymarket/
 │   ├── risk/                 # Risk management
 │   └── hft/                  # HFT Python client
 │       ├── client.py         # REST client for Rust server
+│       ├── market_fetcher.py # Auto-subscribe 500+ markets
 │       └── test_client.py    # Integration tests
 │
 ├── rust-hft/                 # Rust HFT module
@@ -247,6 +303,8 @@ The Rust HFT server exposes a REST API on `http://127.0.0.1:8080`:
 | `/api/v1/stop` | POST | Stop trading |
 | `/api/v1/pause` | POST | Pause trading |
 | `/api/v1/capital` | POST | Set capital allocation |
+| `/api/v1/markets/subscribe` | POST | Subscribe to a market |
+| `/api/v1/connect` | POST | Connect WebSocket |
 | `/api/v1/stats` | GET | Full statistics |
 | `/api/v1/stats/pnl` | GET | P&L summary |
 | `/api/v1/circuit-breaker/reset` | POST | Reset circuit breaker |
