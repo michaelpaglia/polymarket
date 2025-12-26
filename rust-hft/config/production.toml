@@ -1,0 +1,26 @@
+# HFT Server Production Configuration (Amsterdam)
+
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[polymarket]
+ws_url = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+rest_url = "https://clob.polymarket.com"
+chain_id = 137
+
+[arbitrage]
+# More aggressive settings for production
+min_spread_bps = 25
+max_position_size_usd = 1000.0
+cooldown_ms = 50
+
+[risk]
+max_total_exposure_usd = 5000.0
+max_daily_loss_usd = 500.0
+max_positions = 10
+
+[metrics]
+prometheus_port = 9090
+log_level = "info"
+json_logs = true

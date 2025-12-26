@@ -1,0 +1,85 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/hft-core",
+    "crates/hft-websocket",
+    "crates/hft-executor",
+    "crates/hft-risk",
+    "crates/hft-api",
+    "crates/hft-metrics",
+    "crates/hft-server",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Polymarket HFT Bot"]
+license = "MIT"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.41", features = ["full", "rt-multi-thread"] }
+tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+futures-util = "0.3"
+
+# HTTP & API
+axum = { version = "0.7", features = ["tokio"] }
+reqwest = { version = "0.11", features = ["json", "native-tls"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# Crypto & Signing
+ethers = { version = "2.0", default-features = false, features = ["eip712"] }
+alloy-primitives = "0.8"
+sha3 = "0.10"
+hex = "0.4"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+simd-json = "0.14"
+
+# Concurrency
+crossbeam = "0.8"
+parking_lot = "0.12"
+dashmap = "6.1"
+arc-swap = "1.7"
+flume = "0.11"
+
+# Metrics & Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+metrics = "0.24"
+metrics-exporter-prometheus = "0.16"
+
+# Configuration
+config = "0.14"
+dotenvy = "0.15"
+
+# Utilities
+rust_decimal = { version = "1.36", features = ["serde"] }
+rust_decimal_macros = "1.36"
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2.0"
+anyhow = "1.0"
+uuid = { version = "1.11", features = ["v4", "fast-rng", "serde"] }
+
+# Internal crates
+hft-core = { path = "crates/hft-core" }
+hft-websocket = { path = "crates/hft-websocket" }
+hft-executor = { path = "crates/hft-executor" }
+hft-risk = { path = "crates/hft-risk" }
+hft-api = { path = "crates/hft-api" }
+hft-metrics = { path = "crates/hft-metrics" }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.release-fast]
+inherits = "release"
+lto = "thin"
+codegen-units = 4
