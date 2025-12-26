@@ -14,7 +14,7 @@ from src.markets.indexer import MarketIndexer
 from src.markets.matcher import MarketMatcher
 from src.news.aggregator import NewsAggregator
 from src.signals.analyzer import SignalAnalyzer
-from src.signals.models import TradingSignal
+from src.signals.models import TradingSignal, TradeDecision
 from src.trading.client import PolymarketClient
 from src.utils.logging import get_logger, setup_logging
 
@@ -52,6 +52,7 @@ class PolymarketBot:
             settings.llm,
             settings.signals,
             settings.risk,
+            grok_api_key=settings.news.grok_api_key,  # Enable X sentiment edge
         )
 
         # Market matcher (initialized after markets are loaded)
@@ -59,6 +60,7 @@ class PolymarketBot:
 
         # Track paper trades
         self.paper_trades: list[TradingSignal] = []
+        self.trade_decisions: list[TradeDecision] = []
 
     async def start(self) -> None:
         """Start the bot."""
@@ -182,12 +184,73 @@ class PolymarketBot:
 
         # Process actionable signals
         for signal in result.actionable_signals:
-            await self._handle_signal(signal)
+            # Find the matching market for additional info
+            market = None
+            for match in matches:
+                if match.market.condition_id == signal.market_id:
+                    market = match.market
+                    break
 
-    async def _handle_signal(self, signal: TradingSignal) -> None:
+            await self._handle_signal(signal, article, market)
+
+    async def _handle_signal(self, signal: TradingSignal, article=None, market=None) -> None:
         """Handle an actionable trading signal."""
-        # Log the signal
-        self._print_signal(signal)
+        from datetime import datetime, timezone
+        import uuid
+
+        # Calculate news age
+        time_since_news = 0.0
+        if article and article.published_at:
+            now = datetime.now(timezone.utc)
+            # Handle both aware and naive datetimes
+            if article.published_at.tzinfo is None:
+                pub_time = article.published_at.replace(tzinfo=timezone.utc)
+            else:
+                pub_time = article.published_at
+            time_since_news = (now - pub_time).total_seconds() / 60.0
+
+        # Determine news freshness
+        if time_since_news < 15:
+            freshness = "BREAKING"
+        elif time_since_news < 60:
+            freshness = "RECENT"
+        else:
+            freshness = "STALE"
+
+        # Determine action
+        if signal.direction.value == "YES":
+            action = "BUY_YES"
+        elif signal.direction.value == "NO":
+            action = "BUY_NO"
+        else:
+            action = "HOLD"
+
+        # Create structured trade decision
+        decision = TradeDecision(
+            decision_id=str(uuid.uuid4())[:8],
+            news_headline=article.title if article else "",
+            news_source=article.source if article else "",
+            news_published_at=article.published_at if article else None,
+            time_since_news_minutes=time_since_news,
+            market_question=signal.market_question,
+            market_condition_id=signal.market_id,
+            current_yes_price=signal.current_yes_price,
+            current_no_price=signal.current_no_price,
+            market_liquidity_usd=market.liquidity if market else 0.0,
+            action=action,
+            position_size_usd=signal.suggested_size_usd,
+            target_price=signal.current_yes_price if action == "BUY_YES" else signal.current_no_price,
+            edge_summary=f"{freshness} news impacts {signal.direction.value} probability",
+            confidence_score=signal.confidence,
+            reasoning=signal.reasoning,
+            news_freshness=freshness,
+            source_credibility="HIGH" if article and article.source in ["Reuters", "AP", "BBC", "CNN"] else "MEDIUM",
+            is_paper_trade=self.settings.paper_trading,
+        )
+
+        # Store and print the decision
+        self.trade_decisions.append(decision)
+        console.print(str(decision))
 
         if self.settings.paper_trading:
             # Paper trade - just log
@@ -197,6 +260,7 @@ class PolymarketBot:
                 market=signal.market_question[:50],
                 direction=signal.direction.value,
                 size=signal.suggested_size_usd,
+                edge=decision.edge_summary,
             )
         else:
             # Live trade
