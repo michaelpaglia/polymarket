@@ -3,7 +3,7 @@
 import json
 import time
 import uuid
-from typing import Any
+from typing import Any, Optional
 
 from google import genai  # New package
 from google.genai import types
@@ -16,6 +16,7 @@ from src.signals.models import (
     SignalDirection,
     TradingSignal,
 )
+from src.signals.sentiment import XSentimentAnalyzer, SentimentAnalysis
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -67,6 +68,7 @@ class SignalAnalyzer:
     Analyzes news articles and generates trading signals.
 
     Uses Gemini to understand news impact on prediction markets.
+    Combines with X/Twitter sentiment for edge detection.
     """
 
     def __init__(
@@ -74,6 +76,7 @@ class SignalAnalyzer:
         llm_settings: LLMSettings,
         signal_settings: SignalSettings,
         risk_settings: RiskSettings,
+        grok_api_key: str = "",
     ) -> None:
         """
         Initialize the signal analyzer.
@@ -82,18 +85,23 @@ class SignalAnalyzer:
             llm_settings: LLM configuration
             signal_settings: Signal generation settings
             risk_settings: Risk management settings
+            grok_api_key: Optional Grok API key for X sentiment
         """
         self.llm_settings = llm_settings
         self.signal_settings = signal_settings
         self.risk_settings = risk_settings
         self._client: genai.Client | None = None
+        self._sentiment_analyzer: Optional[XSentimentAnalyzer] = None
 
         # Configure Gemini
         if llm_settings.google_api_key:
             self._client = genai.Client(api_key=llm_settings.google_api_key)
             logger.info(f"Signal analyzer initialized with {llm_settings.model}")
-        else:
-            logger.warning("No Google API key configured for signal analyzer")
+
+        # Configure X sentiment analyzer
+        if grok_api_key:
+            self._sentiment_analyzer = XSentimentAnalyzer(grok_api_key)
+            logger.info("X sentiment analyzer enabled for edge detection")
 
     async def analyze(
         self,
@@ -127,10 +135,14 @@ class SignalAnalyzer:
             )
 
         try:
-            # Generate signals using LLM
+            # Generate signals using LLM (news-based)
             signals = await self._generate_signals(article, matches)
 
-            # Calculate position sizes
+            # Enhance signals with X sentiment edge detection (parallel)
+            if self._sentiment_analyzer:
+                signals = await self._enhance_with_sentiment(signals, matches, article)
+
+            # Calculate position sizes (scaled by edge size)
             for signal in signals:
                 signal.suggested_size_usd = self._calculate_position_size(signal)
 
@@ -273,3 +285,119 @@ class SignalAnalyzer:
             position_size = 0.0
 
         return round(position_size, 2)
+
+    async def _enhance_with_sentiment(
+        self,
+        signals: list[TradingSignal],
+        matches: list[MarketMatch],
+        article: NewsArticle,
+    ) -> list[TradingSignal]:
+        """
+        Enhance signals with X/Twitter sentiment edge detection.
+
+        THE EDGE: Find discrepancy between X sentiment and market price.
+        If Twitter thinks probability is 70% but market is at 50%, that's a 20% edge.
+
+        Args:
+            signals: Initial signals from news analysis
+            matches: Matched markets
+            article: The news article
+
+        Returns:
+            Enhanced signals with sentiment edge incorporated
+        """
+        if not self._sentiment_analyzer:
+            return signals
+
+        # Build lookup for signals by market_id
+        signal_lookup = {s.market_id: s for s in signals}
+
+        # Prepare sentiment queries (market question + news context)
+        sentiment_queries = []
+        for match in matches:
+            market = match.market
+            sentiment_queries.append((
+                market.question,
+                f"News: {article.title}"
+            ))
+
+        # Get sentiment for all markets in parallel
+        try:
+            sentiments = await self._sentiment_analyzer.analyze_multiple(sentiment_queries)
+        except Exception as e:
+            logger.warning("Sentiment analysis failed, using news signals only", error=str(e))
+            return signals
+
+        # Enhance signals with sentiment edge
+        enhanced_signals = []
+        for i, match in enumerate(matches):
+            market = match.market
+            sentiment = sentiments[i] if i < len(sentiments) else None
+
+            # Get existing signal or create new one
+            signal = signal_lookup.get(market.condition_id)
+
+            if sentiment and sentiment.confidence >= 0.5:
+                # Calculate edge: X sentiment vs market price
+                x_probability = sentiment.sentiment_score  # What Twitter thinks
+                market_price = market.yes_price  # Current market price for YES
+
+                edge = x_probability - market_price  # Positive = X more bullish than market
+                edge_pct = abs(edge) * 100
+
+                # Log edge detection
+                logger.info(
+                    f"Edge detected: X={x_probability:.0%} vs Market={market_price:.0%} = {edge:+.0%}",
+                    market=market.question[:50],
+                    sentiment=sentiment.sentiment,
+                    volume=sentiment.discussion_volume,
+                )
+
+                if signal:
+                    # Enhance existing signal
+                    if abs(edge) >= 0.1:  # At least 10% discrepancy
+                        # Boost confidence if sentiment aligns with signal direction
+                        if (signal.direction == SignalDirection.YES and edge > 0) or \
+                           (signal.direction == SignalDirection.NO and edge < 0):
+                            # Sentiment confirms signal - boost confidence
+                            signal.confidence = min(1.0, signal.confidence + 0.1)
+                            signal.reasoning += f" [X CONFIRMS: {edge_pct:.0f}% edge, {sentiment.discussion_volume} volume]"
+                        elif (signal.direction == SignalDirection.YES and edge < -0.1) or \
+                             (signal.direction == SignalDirection.NO and edge > 0.1):
+                            # Sentiment contradicts signal - reduce confidence
+                            signal.confidence = max(0.0, signal.confidence - 0.2)
+                            signal.reasoning += f" [X CONTRADICTS: market sentiment differs]"
+
+                    enhanced_signals.append(signal)
+
+                elif abs(edge) >= 0.15:  # 15%+ edge with no news signal - pure sentiment play
+                    # Create new signal based purely on sentiment edge
+                    direction = SignalDirection.YES if edge > 0 else SignalDirection.NO
+                    target_token_id = market.yes_token_id if edge > 0 else market.no_token_id
+
+                    new_signal = TradingSignal(
+                        signal_id=str(uuid.uuid4()),
+                        article_id=article.id,
+                        market_id=market.condition_id,
+                        direction=direction,
+                        confidence=min(0.9, 0.5 + abs(edge)),  # Higher edge = higher confidence
+                        reasoning=f"[X SENTIMENT EDGE] {edge_pct:.0f}% discrepancy. "
+                                  f"X sentiment: {sentiment.sentiment} ({x_probability:.0%}), "
+                                  f"Market: {market_price:.0%}. {sentiment.reasoning}",
+                        market_question=market.question,
+                        current_yes_price=market.yes_price,
+                        current_no_price=market.no_price,
+                        target_token_id=target_token_id or "",
+                        article_published_at=article.published_at,
+                    )
+                    enhanced_signals.append(new_signal)
+                    logger.info(
+                        f"New sentiment-only signal: {direction.value} on {market.question[:40]}...",
+                        edge=f"{edge:+.0%}",
+                    )
+
+            elif signal:
+                # No sentiment data, keep original signal
+                enhanced_signals.append(signal)
+
+        return enhanced_signals
