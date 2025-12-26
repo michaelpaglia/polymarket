@@ -1,5 +1,6 @@
 """Main entry point for the Polymarket trading bot."""
 
+import argparse
 import asyncio
 import signal
 import sys
@@ -16,7 +17,10 @@ from src.news.aggregator import NewsAggregator
 from src.signals.analyzer import SignalAnalyzer
 from src.signals.models import TradingSignal, TradeDecision
 from src.trading.client import PolymarketClient
+from src.trading.positions import PositionTracker, PositionSide, ExitReason
 from src.utils.logging import get_logger, setup_logging
+from src.intelligence.dynamic_graph import DynamicKnowledgeGraph
+from src.intelligence.twitter_intel import TwitterIntelligence, TweetSignal
 
 logger = get_logger(__name__)
 console = Console()
@@ -58,9 +62,32 @@ class PolymarketBot:
         # Market matcher (initialized after markets are loaded)
         self.market_matcher: Optional[MarketMatcher] = None
 
+        # Dynamic knowledge graph - auto-expands from market data
+        self.knowledge_graph = DynamicKnowledgeGraph()
+
+        # Twitter intelligence for alpha scanning
+        self.twitter_intel: Optional[TwitterIntelligence] = None
+        if settings.news.grok_api_key:
+            self.twitter_intel = TwitterIntelligence(
+                grok_api_key=settings.news.grok_api_key,
+                knowledge_graph=None,  # Will use dynamic topics
+            )
+
+        # Position tracker - tracks open positions and manages exits
+        self.position_tracker = PositionTracker(
+            max_positions=50,  # Can hold up to 50 positions
+            max_exposure_usd=settings.risk.max_portfolio_exposure_usd,
+        )
+
         # Track paper trades
         self.paper_trades: list[TradingSignal] = []
         self.trade_decisions: list[TradeDecision] = []
+
+        # Scan intervals (seconds)
+        self._last_alpha_scan: Optional[float] = None
+        self._alpha_scan_interval = 180  # 3 minutes (more frequent)
+        self._last_position_check: Optional[float] = None
+        self._position_check_interval = 60  # Check positions every minute
 
     async def start(self) -> None:
         """Start the bot."""
@@ -81,6 +108,17 @@ class PolymarketBot:
         if self.settings.polymarket.private_key:
             if self.polymarket_client.authenticate():
                 console.print("[green]Authentication: OK[/green]")
+
+                # Show balance for live trading
+                if not self.settings.paper_trading:
+                    balance = self.polymarket_client.get_balance()
+                    if balance > 0:
+                        console.print(f"[green]USDC Balance: ${balance:.2f}[/green]")
+                    else:
+                        console.print("[red]WARNING: No USDC balance detected![/red]")
+                        console.print("[yellow]You need USDC on Polygon to trade.[/yellow]")
+                        console.print("[yellow]Switching to paper trading mode.[/yellow]")
+                        self.settings.paper_trading = True
             else:
                 console.print("[yellow]Authentication: FAILED (read-only mode)[/yellow]")
 
@@ -109,8 +147,12 @@ class PolymarketBot:
         console.print("\n[bold]Entering main loop...[/bold]")
         console.print("Press Ctrl+C to stop\n")
 
+        import time
+
         while self._running:
             try:
+                current_time = time.time()
+
                 # Refresh markets if needed
                 if self.market_indexer.needs_refresh():
                     await self._refresh_markets()
@@ -118,10 +160,31 @@ class PolymarketBot:
                         self.market_matcher.update_markets(
                             {m.condition_id: m for m in self.market_indexer.markets}
                         )
+                    # Extract entities from ALL markets dynamically
+                    self.knowledge_graph.extract_entities_from_markets(
+                        self.market_indexer.markets
+                    )
+                    console.print(f"[dim]Knowledge graph: {len(self.knowledge_graph.entities)} entities tracked[/dim]")
 
                 # Fetch news if needed
                 if self.news_aggregator.needs_fetch():
                     await self._process_news()
+
+                # Check positions for exit conditions (every minute)
+                if (
+                    self._last_position_check is None
+                    or current_time - self._last_position_check >= self._position_check_interval
+                ):
+                    await self._check_positions()
+                    self._last_position_check = current_time
+
+                # Twitter alpha scan (every 3 minutes)
+                if self.twitter_intel and (
+                    self._last_alpha_scan is None
+                    or current_time - self._last_alpha_scan >= self._alpha_scan_interval
+                ):
+                    await self._scan_twitter_alpha()
+                    self._last_alpha_scan = current_time
 
                 # Wait before next iteration
                 await asyncio.sleep(10)
@@ -134,6 +197,215 @@ class PolymarketBot:
 
         # Print summary on exit
         self._print_summary()
+
+    async def _check_positions(self) -> None:
+        """Check all positions for exit conditions."""
+        if not self.position_tracker.positions:
+            return
+
+        # Update prices from current market data
+        market_prices = {}
+        for market in self.market_indexer.markets:
+            market_prices[market.condition_id] = (market.yes_price, market.no_price)
+
+        self.position_tracker.update_prices(market_prices)
+
+        # Check for exits
+        exits = self.position_tracker.check_all_exits()
+
+        for position, exit_reason in exits:
+            # Get current price for exit
+            current_price = position.current_price
+
+            # Close the position
+            closed = self.position_tracker.close_position(
+                position.position_id,
+                exit_price=current_price,
+                exit_reason=exit_reason,
+            )
+
+            if closed:
+                console.print(
+                    f"[yellow]CLOSED: {position.market_question[:40]}... "
+                    f"P&L: ${closed.realized_pnl_usd:+.2f} ({closed.realized_pnl_pct:+.1%}) "
+                    f"- {exit_reason.value}[/yellow]"
+                )
+
+        # Print position summary periodically
+        if self.position_tracker.positions:
+            summary = self.position_tracker.get_summary()
+            console.print(
+                f"[dim]Positions: {summary['open_positions']} open | "
+                f"P&L: ${summary['unrealized_pnl_usd']:+.2f} | "
+                f"Available: ${summary['available_capital_usd']:.2f}[/dim]"
+            )
+
+    async def _scan_twitter_alpha(self) -> None:
+        """
+        Scan Twitter/X for alpha signals.
+
+        This runs independently of news articles - looks for:
+        1. Breaking news before mainstream media
+        2. Influencer posts that move markets
+        3. Viral content that could shift sentiment
+        """
+        if not self.twitter_intel:
+            return
+
+        console.print("[dim]Scanning X for alpha...[/dim]")
+
+        try:
+            # Get top topics dynamically from knowledge graph
+            # These are extracted from ALL market questions
+            topics = self.knowledge_graph.get_search_topics(limit=30)
+
+            if not topics:
+                # Fallback to broad topics
+                topics = ["politics", "crypto", "elections", "economy", "sports"]
+
+            # Scan for signals
+            signals = await self.twitter_intel.scan_for_alpha(topics=topics)
+
+            if not signals:
+                console.print("[dim]No alpha signals detected[/dim]")
+                return
+
+            console.print(f"[blue]Found {len(signals)} Twitter signals[/blue]")
+
+            # Process each signal
+            for signal in signals:
+                await self._process_twitter_signal(signal)
+
+        except Exception as e:
+            logger.warning(f"Twitter alpha scan failed: {e}")
+
+    async def _process_twitter_signal(self, signal: TweetSignal) -> None:
+        """Process a Twitter signal and potentially generate a trade."""
+        from datetime import datetime, timezone
+        import uuid
+
+        # Find relevant markets using knowledge graph
+        relevant_markets = self.knowledge_graph.find_markets_for_text(
+            signal.content_summary
+        )
+        # Convert to list of tuples (market_id, relevance)
+        relevant_markets = [(mid, 0.8) for mid in relevant_markets]
+
+        if not relevant_markets and self.market_matcher:
+            # Fallback: use vector similarity
+            from src.news.models import NewsArticle
+
+            fake_article = NewsArticle(
+                id=str(uuid.uuid4()),
+                title=signal.content_summary,
+                description=f"Twitter signal from {signal.source_handle}",
+                content=signal.content_summary,
+                source_name=f"X/{signal.source_handle}",
+                url="",
+                published_at=signal.timestamp,
+            )
+
+            matches = await self.market_matcher.match(fake_article)
+            if matches:
+                relevant_markets = [
+                    (m.market.condition_id, m.llm_confidence) for m in matches[:3]
+                ]
+
+        if not relevant_markets:
+            return
+
+        # Create trade decision for high-urgency signals
+        if signal.urgency in ["critical", "high"] and signal.relevance_score >= 0.7:
+            # Get the top market
+            market_id, relevance = relevant_markets[0]
+            market = None
+
+            for m in self.market_indexer.markets:
+                if m.condition_id == market_id:
+                    market = m
+                    break
+
+            if not market:
+                return
+
+            # Determine action based on sentiment
+            if signal.sentiment == "bullish":
+                action = "BUY_YES"
+            elif signal.sentiment == "bearish":
+                action = "BUY_NO"
+            else:
+                action = "HOLD"
+
+            if action == "HOLD":
+                return
+
+            # Calculate position size based on confidence
+            position_size = min(
+                self.settings.risk.max_position_per_market_usd * signal.relevance_score,
+                self.settings.risk.max_position_per_market_usd,
+            )
+
+            # Check if we can open this position
+            can_open, reason = self.position_tracker.can_open_position(
+                position_size, market.condition_id
+            )
+
+            if not can_open:
+                console.print(f"[dim]Skipping Twitter signal: {reason}[/dim]")
+                return
+
+            decision = TradeDecision(
+                decision_id=str(uuid.uuid4())[:8],
+                news_headline=f"[X/{signal.source_handle}] {signal.content_summary[:100]}",
+                news_source=f"X/{signal.source_handle}",
+                news_published_at=signal.timestamp,
+                time_since_news_minutes=0.0,  # Real-time
+                market_question=market.question,
+                market_condition_id=market.condition_id,
+                current_yes_price=market.yes_price,
+                current_no_price=market.no_price,
+                market_liquidity_usd=market.liquidity,
+                action=action,
+                position_size_usd=position_size,
+                target_price=market.yes_price if action == "BUY_YES" else market.no_price,
+                edge_summary=f"[{signal.urgency.upper()}] {signal.signal_type}: {signal.sentiment} sentiment ({signal.sentiment_score:.0%})",
+                confidence_score=signal.relevance_score,
+                reasoning=f"Twitter signal detected: {signal.signal_type} from {signal.source_handle}. "
+                f"Sentiment: {signal.sentiment}. Virality: {signal.virality_potential:.0%}",
+                news_freshness="BREAKING" if signal.urgency == "critical" else "RECENT",
+                source_credibility="HIGH" if signal.relevance_score >= 0.8 else "MEDIUM",
+                is_paper_trade=self.settings.paper_trading,
+            )
+
+            self.trade_decisions.append(decision)
+            console.print(str(decision))
+
+            # Open position in tracker
+            entry_price = market.yes_price if action == "BUY_YES" else market.no_price
+            position_side = PositionSide.YES if action == "BUY_YES" else PositionSide.NO
+
+            position = self.position_tracker.open_position(
+                position_id=decision.decision_id,
+                market_id=market.condition_id,
+                market_question=market.question,
+                side=position_side,
+                entry_price=entry_price,
+                size_usd=position_size,
+                market_end_date=market.end_date,
+                is_paper=self.settings.paper_trading,
+                signal_id=f"twitter-{signal.signal_type}",
+                reasoning=decision.reasoning,
+                confidence=signal.relevance_score,
+            )
+
+            if position:
+                logger.info(
+                    "Position opened from Twitter signal",
+                    signal_type=signal.signal_type,
+                    source=signal.source_handle,
+                    action=action,
+                    size=position_size,
+                )
 
     async def _refresh_markets(self) -> None:
         """Refresh the market index."""
@@ -248,21 +520,48 @@ class PolymarketBot:
             is_paper_trade=self.settings.paper_trading,
         )
 
+        # Check if we can open this position
+        can_open, reason = self.position_tracker.can_open_position(
+            signal.suggested_size_usd, signal.market_id
+        )
+
+        if not can_open:
+            console.print(f"[dim]Skipping: {reason}[/dim]")
+            return
+
         # Store and print the decision
         self.trade_decisions.append(decision)
         console.print(str(decision))
 
-        if self.settings.paper_trading:
-            # Paper trade - just log
+        # Open position in tracker
+        entry_price = signal.current_yes_price if action == "BUY_YES" else signal.current_no_price
+        position_side = PositionSide.YES if action == "BUY_YES" else PositionSide.NO
+
+        position = self.position_tracker.open_position(
+            position_id=decision.decision_id,
+            market_id=signal.market_id,
+            market_question=signal.market_question,
+            side=position_side,
+            entry_price=entry_price,
+            size_usd=signal.suggested_size_usd,
+            market_end_date=market.end_date if market else None,
+            is_paper=self.settings.paper_trading,
+            signal_id=signal.signal_id,
+            reasoning=signal.reasoning,
+            confidence=signal.confidence,
+        )
+
+        if position:
             self.paper_trades.append(signal)
             logger.info(
-                "Paper trade recorded",
+                "Position opened",
                 market=signal.market_question[:50],
                 direction=signal.direction.value,
                 size=signal.suggested_size_usd,
                 edge=decision.edge_summary,
             )
-        else:
+
+        if not self.settings.paper_trading:
             # Live trade
             await self._execute_trade(signal)
 
@@ -313,8 +612,24 @@ class PolymarketBot:
         """Print session summary."""
         console.print("\n[bold]Session Summary[/bold]")
 
+        # Portfolio summary
+        summary = self.position_tracker.get_summary()
+        console.print("\n[bold]Portfolio Status:[/bold]")
+        console.print(f"  Open Positions: {summary['open_positions']}")
+        console.print(f"  Total Invested: ${summary['total_invested_usd']:.2f}")
+        console.print(f"  Current Value: ${summary['total_value_usd']:.2f}")
+        console.print(f"  Unrealized P&L: ${summary['unrealized_pnl_usd']:+.2f} ({summary['unrealized_pnl_pct']:+.1f}%)")
+        console.print(f"  Closed Trades: {summary['closed_trades']}")
+        console.print(f"  Realized P&L: ${summary['realized_pnl_usd']:+.2f}")
+        console.print(f"  Win Rate: {summary['win_rate']:.1f}%")
+
+        # Knowledge graph stats
+        console.print(f"\n[bold]Knowledge Graph:[/bold]")
+        console.print(f"  Entities Tracked: {len(self.knowledge_graph.entities)}")
+        console.print(f"  Influencers Known: {len(self.knowledge_graph.influencers)}")
+
         if self.paper_trades:
-            table = Table(title="Paper Trades")
+            table = Table(title="Recent Trades")
             table.add_column("Market", style="cyan", max_width=40)
             table.add_column("Direction", style="green")
             table.add_column("Confidence")
@@ -329,15 +644,50 @@ class PolymarketBot:
                 )
 
             console.print(table)
-            console.print(f"\nTotal paper trades: {len(self.paper_trades)}")
+            console.print(f"\nTotal trades this session: {len(self.paper_trades)}")
         else:
-            console.print("No trades executed this session")
+            console.print("\nNo trades executed this session")
 
 
 def main() -> None:
     """Main entry point."""
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description="Polymarket Trading Bot")
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Run in LIVE trading mode (uses real money!)",
+    )
+    parser.add_argument(
+        "--paper",
+        action="store_true",
+        help="Run in paper trading mode (default)",
+    )
+    parser.add_argument(
+        "--setup",
+        action="store_true",
+        help="Run interactive setup wizard to configure API keys",
+    )
+    args = parser.parse_args()
+
+    # Run setup wizard if requested
+    if args.setup:
+        from src.setup import setup
+        setup()
+        return
+
     # Load settings
     settings = get_settings()
+
+    # Override paper_trading based on command line
+    if args.live:
+        settings.paper_trading = False
+        console.print("[bold red]*** LIVE TRADING MODE ***[/bold red]")
+        console.print("[yellow]Real money will be used. Press Ctrl+C to cancel.[/yellow]")
+        import time
+        time.sleep(3)  # Give user time to cancel
+    elif args.paper:
+        settings.paper_trading = True
 
     # Setup logging
     setup_logging(
