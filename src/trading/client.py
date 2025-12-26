@@ -4,13 +4,23 @@ from dataclasses import dataclass
 from typing import Any
 
 from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import MarketOrderArgs, OpenOrderParams, OrderArgs, OrderType
+from py_clob_client.clob_types import (
+    AssetType,
+    BalanceAllowanceParams,
+    MarketOrderArgs,
+    OpenOrderParams,
+    OrderArgs,
+    OrderType,
+)
 from py_clob_client.order_builder.constants import BUY, SELL
 
 from src.config import PolymarketSettings
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+# USDC contract on Polygon
+USDC_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
 
 
 @dataclass
@@ -391,3 +401,46 @@ class PolymarketClient:
         except Exception as e:
             logger.error("Failed to fetch trades", error=str(e))
             return []
+
+    def get_balance(self) -> float:
+        """
+        Get USDC balance available for trading.
+
+        Returns:
+            USDC balance in dollars
+        """
+        if not self._authenticated:
+            return 0.0
+
+        try:
+            params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)  # type: ignore[arg-type]
+            result: Any = self.client.get_balance_allowance(params)
+
+            if result:
+                # Balance is in raw units (6 decimals for USDC)
+                balance_raw = float(result.get("balance", 0))
+                return balance_raw / 1_000_000  # Convert to dollars
+            return 0.0
+
+        except Exception as e:
+            logger.error("Failed to fetch balance", error=str(e))
+            return 0.0
+
+    def get_api_credentials(self) -> dict[str, str]:
+        """
+        Get API credentials for WebSocket authentication.
+
+        Returns:
+            Dict with apiKey, secret, passphrase
+        """
+        if not self._authenticated or not hasattr(self.client, "creds"):
+            return {}
+
+        creds = self.client.creds
+        if creds:
+            return {
+                "apiKey": creds.api_key,
+                "secret": creds.api_secret,
+                "passphrase": creds.api_passphrase,
+            }
+        return {}
