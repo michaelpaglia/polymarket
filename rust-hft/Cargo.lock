@@ -1895,6 +1895,7 @@ dependencies = [
  "hft-core",
  "hft-metrics",
  "hft-risk",
+ "hft-websocket",
  "parking_lot",
  "rust_decimal",
  "rust_decimal_macros",

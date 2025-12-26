@@ -7,6 +7,12 @@ use tracing::warn;
 
 /// Parse WebSocket message with SIMD acceleration
 pub fn parse_message(text: &str) -> Result<WsMessage, HftError> {
+    // Check if message is an array (Polymarket sends arrays of book updates)
+    let trimmed = text.trim();
+    if trimmed.starts_with('[') {
+        return parse_array_message(text);
+    }
+
     // First, try to detect message type from raw text (faster than parsing)
     let event_type = detect_event_type(text);
 
@@ -16,10 +22,154 @@ pub fn parse_message(text: &str) -> Result<WsMessage, HftError> {
         Some("last_trade_price") => parse_last_trade(text),
         Some("tick_size_change") => parse_tick_size(text),
         _ => {
-            warn!(text = text, "Unknown message type");
+            warn!(text = &text[..text.len().min(200)], "Unknown message type");
             Ok(WsMessage::Unknown(text.to_string()))
         }
     }
+}
+
+/// Parse array of messages (Polymarket often sends book updates as arrays)
+fn parse_array_message(text: &str) -> Result<WsMessage, HftError> {
+    let mut text_bytes = text.as_bytes().to_vec();
+
+    let array: Vec<simd_json::OwnedValue> = simd_json::to_owned_value(&mut text_bytes)
+        .map_err(|e| HftError::MessageParse(e.to_string()))?
+        .into_array()
+        .unwrap_or_default();
+
+    // Process first book message we find
+    for value in array {
+        let event_type = value
+            .get("event_type")
+            .and_then(|v| v.as_str());
+
+        if event_type == Some("book") {
+            let asset_id = value
+                .get("asset_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let market = value
+                .get("market")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let timestamp = value
+                .get("timestamp")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let hash = value
+                .get("hash")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
+            let bids = parse_levels_from_value(value.get("bids"));
+            let asks = parse_levels_from_value(value.get("asks"));
+
+            return Ok(WsMessage::Book(BookMessage {
+                asset_id,
+                market,
+                bids,
+                asks,
+                timestamp,
+                hash,
+            }));
+        }
+    }
+
+    Ok(WsMessage::Unknown(text.to_string()))
+}
+
+/// Parse all book messages from an array
+pub fn parse_all_books(text: &str) -> Vec<BookMessage> {
+    let mut books = Vec::new();
+
+    let trimmed = text.trim();
+    if !trimmed.starts_with('[') {
+        // Single message
+        if let Ok(WsMessage::Book(book)) = parse_message(text) {
+            books.push(book);
+        }
+        return books;
+    }
+
+    let mut text_bytes = text.as_bytes().to_vec();
+
+    let array: Vec<simd_json::OwnedValue> = match simd_json::to_owned_value(&mut text_bytes) {
+        Ok(v) => v.into_array().unwrap_or_default(),
+        Err(_) => return books,
+    };
+
+    for value in array {
+        let event_type = value.get("event_type").and_then(|v| v.as_str());
+
+        if event_type == Some("book") {
+            let asset_id = value
+                .get("asset_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let market = value
+                .get("market")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let timestamp = value
+                .get("timestamp")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let hash = value
+                .get("hash")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
+            let bids = parse_levels_from_value(value.get("bids"));
+            let asks = parse_levels_from_value(value.get("asks"));
+
+            books.push(BookMessage {
+                asset_id,
+                market,
+                bids,
+                asks,
+                timestamp,
+                hash,
+            });
+        }
+    }
+
+    books
+}
+
+fn parse_levels_from_value(value: Option<&simd_json::OwnedValue>) -> Vec<BookLevel> {
+    let mut levels = Vec::new();
+
+    if let Some(arr) = value.and_then(|v| v.as_array()) {
+        for item in arr {
+            if let Some(obj) = item.as_object() {
+                let price = obj
+                    .get("price")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("0")
+                    .to_string();
+                let size = obj
+                    .get("size")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("0")
+                    .to_string();
+                levels.push(BookLevel { price, size });
+            }
+        }
+    }
+
+    levels
 }
 
 /// Fast event type detection without full parsing

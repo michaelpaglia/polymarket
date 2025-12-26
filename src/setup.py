@@ -76,6 +76,9 @@ def setup() -> None:
     print("[HFT SETTINGS - Optional]")
     print("=" * 40)
     hft_capital = input("  HFT Capital USD (default: 5000): ").strip() or "5000"
+    print("Format: host:port:user:pass (e.g., proxy.com:8080:user:pass)")
+    hft_proxy = input("  HFT Proxy (for Amsterdam server): ").strip()
+    hft_balance_pct = input("  HFT Balance % (default: 50): ").strip() or "50"
 
     # Optional
     print()
@@ -108,6 +111,8 @@ GROK_API_KEY={grok_key}
 
 # HFT Settings
 HFT_CAPITAL_USD={hft_capital}
+HFT_PROXY={hft_proxy}
+HFT_BALANCE_PERCENTAGE={hft_balance_pct}
 
 # Optional: Polygon RPC for faster transactions
 POLYGON_RPC_URL={polygon_rpc}

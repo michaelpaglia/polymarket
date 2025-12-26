@@ -25,6 +25,10 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/pause", post(pause_trading))
         // Capital management
         .route("/api/v1/capital", post(set_capital))
+        // Balance management (dynamic 50% cap)
+        .route("/api/v1/balance/sync", post(sync_balance))
+        .route("/api/v1/balance/info", get(get_balance_info))
+        .route("/api/v1/balance/percentage", post(set_balance_percentage))
         // Statistics
         .route("/api/v1/stats", get(get_stats))
         .route("/api/v1/stats/pnl", get(get_pnl))

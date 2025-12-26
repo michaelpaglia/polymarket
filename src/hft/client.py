@@ -78,6 +78,17 @@ class HftStats:
     latency_max_us: int
 
 
+@dataclass
+class BalanceInfo:
+    """Balance allocation information for dynamic capital management."""
+    account_balance: Decimal  # Total account balance
+    max_percentage: Decimal   # Max percentage to use (e.g., 0.5 for 50%)
+    max_allowed: Decimal      # Maximum allowed capital
+    current_exposure: Decimal # Current exposure in positions
+    available_capital: Decimal # Available for new trades
+    utilization: Decimal      # Current utilization (exposure / max_allowed)
+
+
 class HftClient:
     """
     Async REST client for the Rust HFT trading module.
@@ -335,6 +346,81 @@ class HftClient:
         except Exception:
             return False
 
+    async def sync_balance(self, account_balance_usd: float) -> BalanceInfo:
+        """
+        Sync account balance with HFT module.
+
+        This updates the available capital based on the 50% cap rule.
+        Call this periodically or after deposits/withdrawals.
+
+        Args:
+            account_balance_usd: Total account balance in USD
+
+        Returns:
+            BalanceInfo with updated allocation details
+        """
+        resp = await self.client.post(
+            "/api/v1/balance/sync",
+            json={"account_balance_usd": account_balance_usd}
+        )
+        resp.raise_for_status()
+        data = resp.json()["balance_info"]
+
+        return BalanceInfo(
+            account_balance=Decimal(str(data["account_balance"])),
+            max_percentage=Decimal(str(data["max_percentage"])),
+            max_allowed=Decimal(str(data["max_allowed"])),
+            current_exposure=Decimal(str(data["current_exposure"])),
+            available_capital=Decimal(str(data["available_capital"])),
+            utilization=Decimal(str(data["utilization"])),
+        )
+
+    async def get_balance_info(self) -> BalanceInfo:
+        """
+        Get current balance allocation info.
+
+        Returns:
+            BalanceInfo with current allocation state
+        """
+        resp = await self.client.get("/api/v1/balance/info")
+        resp.raise_for_status()
+        data = resp.json()
+
+        return BalanceInfo(
+            account_balance=Decimal(str(data["account_balance"])),
+            max_percentage=Decimal(str(data["max_percentage"])),
+            max_allowed=Decimal(str(data["max_allowed"])),
+            current_exposure=Decimal(str(data["current_exposure"])),
+            available_capital=Decimal(str(data["available_capital"])),
+            utilization=Decimal(str(data["utilization"])),
+        )
+
+    async def set_balance_percentage(self, percentage: float) -> BalanceInfo:
+        """
+        Set the maximum percentage of account balance to use.
+
+        Args:
+            percentage: Percentage as decimal (0.5 = 50%, 0.25 = 25%)
+
+        Returns:
+            BalanceInfo with updated allocation
+        """
+        resp = await self.client.post(
+            "/api/v1/balance/percentage",
+            json={"percentage": percentage}
+        )
+        resp.raise_for_status()
+        data = resp.json()["balance_info"]
+
+        return BalanceInfo(
+            account_balance=Decimal(str(data["account_balance"])),
+            max_percentage=Decimal(str(data["max_percentage"])),
+            max_allowed=Decimal(str(data["max_allowed"])),
+            current_exposure=Decimal(str(data["current_exposure"])),
+            available_capital=Decimal(str(data["available_capital"])),
+            utilization=Decimal(str(data["utilization"])),
+        )
+
     async def paper_trade(
         self,
         market_id: Optional[str] = None,
@@ -413,3 +499,56 @@ async def coordinate_capital(
         "hft_capital": hft_capital,
         "hft_available": result.get("available_usd", 0),
     }
+
+
+async def start_balance_sync_task(
+    hft_client: HftClient,
+    get_balance_func,
+    sync_interval_seconds: float = 60.0,
+    hft_percentage: float = 0.50,
+):
+    """
+    Start a background task that syncs account balance periodically.
+
+    This ensures the HFT module always uses the correct 50% (or specified)
+    of the account balance, automatically scaling with profits/losses.
+
+    Args:
+        hft_client: HFT client instance
+        get_balance_func: Async function that returns current account balance in USD
+        sync_interval_seconds: How often to sync (default: 60 seconds)
+        hft_percentage: Percentage of balance for HFT (default: 0.50 for 50%)
+
+    Returns:
+        asyncio.Task that can be cancelled to stop syncing
+
+    Example:
+        async def get_my_balance():
+            # Your logic to get account balance from Polymarket
+            return 10000.0  # $10,000
+
+        task = await start_balance_sync_task(hft_client, get_my_balance)
+        # ... later ...
+        task.cancel()
+    """
+    import asyncio
+
+    # Set the percentage cap
+    await hft_client.set_balance_percentage(hft_percentage)
+
+    async def sync_loop():
+        while True:
+            try:
+                balance = await get_balance_func()
+                if balance and balance > 0:
+                    info = await hft_client.sync_balance(balance)
+                    print(f"[Balance Sync] Account: ${balance:.2f}, "
+                          f"HFT Max: ${info.max_allowed:.2f}, "
+                          f"Available: ${info.available_capital:.2f}, "
+                          f"Utilization: {info.utilization * 100:.1f}%")
+            except Exception as e:
+                print(f"[Balance Sync] Error: {e}")
+
+            await asyncio.sleep(sync_interval_seconds)
+
+    return asyncio.create_task(sync_loop())

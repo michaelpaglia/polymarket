@@ -70,6 +70,10 @@ pub struct RiskManager {
     positions: DashMap<MarketId, Position>,
     total_exposure: RwLock<Decimal>,
     available_capital: RwLock<Decimal>,
+    /// Total account balance (fetched periodically)
+    account_balance: RwLock<Decimal>,
+    /// Maximum percentage of account to use (0.0 - 1.0)
+    max_balance_percentage: RwLock<Decimal>,
     checks_passed: AtomicU64,
     checks_failed: AtomicU64,
 }
@@ -82,6 +86,22 @@ impl RiskManager {
             positions: DashMap::new(),
             total_exposure: RwLock::new(Decimal::ZERO),
             available_capital: RwLock::new(initial_capital),
+            account_balance: RwLock::new(initial_capital * Decimal::TWO), // Assume 50% allocation initially
+            max_balance_percentage: RwLock::new(dec!(0.50)), // 50% default
+            checks_passed: AtomicU64::new(0),
+            checks_failed: AtomicU64::new(0),
+        }
+    }
+
+    /// Create with specific balance percentage cap
+    pub fn with_balance_cap(limits: RiskLimits, initial_capital: Decimal, max_percentage: Decimal) -> Self {
+        Self {
+            limits: RwLock::new(limits),
+            positions: DashMap::new(),
+            total_exposure: RwLock::new(Decimal::ZERO),
+            available_capital: RwLock::new(initial_capital),
+            account_balance: RwLock::new(initial_capital / max_percentage),
+            max_balance_percentage: RwLock::new(max_percentage),
             checks_passed: AtomicU64::new(0),
             checks_failed: AtomicU64::new(0),
         }
@@ -238,6 +258,72 @@ impl RiskManager {
         *capital = amount - current_exposure;
     }
 
+    /// Update account balance and recalculate available capital based on percentage cap
+    /// This should be called periodically to sync with actual wallet balance
+    pub fn sync_balance(&self, total_account_balance: Decimal) {
+        let max_pct = *self.max_balance_percentage.read();
+        let max_allowed = total_account_balance * max_pct;
+
+        // Update account balance
+        {
+            let mut balance = self.account_balance.write();
+            *balance = total_account_balance;
+        }
+
+        // Recalculate available capital (max_allowed minus current exposure)
+        let current_exposure = *self.total_exposure.read();
+        let new_available = (max_allowed - current_exposure).max(Decimal::ZERO);
+
+        {
+            let mut capital = self.available_capital.write();
+            *capital = new_available;
+        }
+
+        debug!(
+            account_balance = %total_account_balance,
+            max_percentage = %max_pct,
+            max_allowed = %max_allowed,
+            current_exposure = %current_exposure,
+            available_capital = %new_available,
+            "Balance synced"
+        );
+    }
+
+    /// Set the maximum balance percentage (0.0 - 1.0)
+    pub fn set_balance_percentage(&self, percentage: Decimal) {
+        let clamped = percentage.max(dec!(0.01)).min(dec!(1.0));
+        {
+            let mut pct = self.max_balance_percentage.write();
+            *pct = clamped;
+        }
+
+        // Recalculate with current balance
+        let current_balance = *self.account_balance.read();
+        self.sync_balance(current_balance);
+    }
+
+    /// Get current balance allocation info
+    pub fn balance_info(&self) -> BalanceInfo {
+        let account_balance = *self.account_balance.read();
+        let max_pct = *self.max_balance_percentage.read();
+        let max_allowed = account_balance * max_pct;
+        let current_exposure = *self.total_exposure.read();
+        let available = *self.available_capital.read();
+
+        BalanceInfo {
+            account_balance,
+            max_percentage: max_pct,
+            max_allowed,
+            current_exposure,
+            available_capital: available,
+            utilization: if max_allowed > Decimal::ZERO {
+                current_exposure / max_allowed
+            } else {
+                Decimal::ZERO
+            },
+        }
+    }
+
     /// Get statistics
     pub fn stats(&self) -> RiskStats {
         RiskStats {
@@ -258,6 +344,23 @@ pub struct RiskStats {
     pub position_count: usize,
     pub checks_passed: u64,
     pub checks_failed: u64,
+}
+
+/// Balance allocation information
+#[derive(Debug, Clone, Serialize)]
+pub struct BalanceInfo {
+    /// Total account balance (from wallet)
+    pub account_balance: Decimal,
+    /// Maximum percentage of account to use (0.0 - 1.0)
+    pub max_percentage: Decimal,
+    /// Maximum allowed capital (account_balance * max_percentage)
+    pub max_allowed: Decimal,
+    /// Current exposure in positions
+    pub current_exposure: Decimal,
+    /// Available capital for new trades
+    pub available_capital: Decimal,
+    /// Current utilization (exposure / max_allowed)
+    pub utilization: Decimal,
 }
 
 #[cfg(test)]

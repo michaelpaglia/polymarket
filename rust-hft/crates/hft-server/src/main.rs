@@ -151,11 +151,39 @@ async fn main() -> Result<()> {
 
     let pnl_tracker = Arc::new(PnlTracker::new(1000));
 
-    // Create application state
-    let app_state = Arc::new(AppState::new(
+    // Initialize arbitrage detector
+    let arb_config = ArbitrageConfig {
+        min_spread_bps: config.arbitrage.min_spread_bps,
+        max_position_size_usd: Decimal::from_f64_retain(config.arbitrage.max_position_size_usd)
+            .unwrap_or(Decimal::from(500)),
+        cooldown_us: config.arbitrage.cooldown_ms * 1000,
+        ..Default::default()
+    };
+    let detector = Arc::new(ArbitrageDetector::new(arb_config));
+
+    // Initialize WebSocket client with optional proxy
+    let mut ws_config = WebSocketConfig {
+        url: config.polymarket.ws_url.clone(),
+        ..Default::default()
+    };
+
+    // Load proxy from environment if set (format: host:port:user:pass)
+    if let Ok(proxy_str) = std::env::var("HFT_PROXY") {
+        ws_config = ws_config.with_proxy(&proxy_str);
+        if let Some(ref proxy) = ws_config.proxy {
+            info!(host = %proxy.host, port = proxy.port, "Proxy configured");
+        }
+    }
+
+    let ws_client = Arc::new(WebSocketClient::new(ws_config));
+
+    // Create application state with WebSocket and arbitrage detector
+    let app_state = Arc::new(AppState::with_ws(
         risk_manager.clone(),
         circuit_breaker.clone(),
         pnl_tracker.clone(),
+        ws_client.clone(),
+        detector.clone(),
     ));
 
     // Initialize order executor
@@ -174,23 +202,6 @@ async fn main() -> Result<()> {
     );
 
     info!(address = %executor.address(), "Order executor initialized");
-
-    // Initialize arbitrage detector
-    let arb_config = ArbitrageConfig {
-        min_spread_bps: config.arbitrage.min_spread_bps,
-        max_position_size_usd: Decimal::from_f64_retain(config.arbitrage.max_position_size_usd)
-            .unwrap_or(Decimal::from(500)),
-        cooldown_us: config.arbitrage.cooldown_ms * 1000,
-        ..Default::default()
-    };
-    let detector = Arc::new(ArbitrageDetector::new(arb_config));
-
-    // Initialize WebSocket client
-    let ws_config = WebSocketConfig {
-        url: config.polymarket.ws_url.clone(),
-        ..Default::default()
-    };
-    let ws_client = Arc::new(WebSocketClient::new(ws_config));
 
     // Start API server
     let api_bind = format!("{}:{}", config.server.host, config.server.port);

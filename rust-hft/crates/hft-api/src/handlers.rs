@@ -3,7 +3,7 @@
 use crate::state::AppState;
 use axum::{extract::State, http::StatusCode, Json};
 use hft_core::{MarketId, TokenId, TradingState};
-use hft_risk::{CircuitBreakerState, PnlSummary, RiskLimits, RiskStats};
+use hft_risk::{BalanceInfo, CircuitBreakerState, PnlSummary, RiskLimits, RiskStats};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -525,4 +525,86 @@ pub async fn get_orderbook(
             has_arbitrage: false,
         })
     }
+}
+
+/// Balance sync request
+#[derive(Debug, Deserialize)]
+pub struct BalanceSyncRequest {
+    /// Total account balance in USD
+    pub account_balance_usd: Decimal,
+}
+
+/// Balance sync response
+#[derive(Debug, Serialize)]
+pub struct BalanceSyncResponse {
+    pub success: bool,
+    pub balance_info: BalanceInfo,
+    pub message: String,
+}
+
+/// Sync account balance - automatically recalculates available capital based on 50% cap
+pub async fn sync_balance(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<BalanceSyncRequest>,
+) -> Json<BalanceSyncResponse> {
+    state.risk_manager.sync_balance(req.account_balance_usd);
+    let info = state.risk_manager.balance_info();
+
+    tracing::info!(
+        account_balance = %req.account_balance_usd,
+        max_allowed = %info.max_allowed,
+        available = %info.available_capital,
+        "Balance synced"
+    );
+
+    Json(BalanceSyncResponse {
+        success: true,
+        balance_info: info,
+        message: format!(
+            "Balance synced: {} total, {} max for HFT ({}%), {} available",
+            req.account_balance_usd,
+            state.risk_manager.balance_info().max_allowed,
+            (state.risk_manager.balance_info().max_percentage * rust_decimal_macros::dec!(100)).round(),
+            state.risk_manager.balance_info().available_capital
+        ),
+    })
+}
+
+/// Get current balance allocation info
+pub async fn get_balance_info(
+    State(state): State<Arc<AppState>>,
+) -> Json<BalanceInfo> {
+    Json(state.risk_manager.balance_info())
+}
+
+/// Set balance percentage request
+#[derive(Debug, Deserialize)]
+pub struct SetBalancePercentageRequest {
+    /// Percentage of account balance to use (0.0 - 1.0, e.g., 0.5 for 50%)
+    pub percentage: Decimal,
+}
+
+/// Set the maximum percentage of account balance to use
+pub async fn set_balance_percentage(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SetBalancePercentageRequest>,
+) -> Json<BalanceSyncResponse> {
+    state.risk_manager.set_balance_percentage(req.percentage);
+    let info = state.risk_manager.balance_info();
+
+    tracing::info!(
+        percentage = %req.percentage,
+        max_allowed = %info.max_allowed,
+        "Balance percentage updated"
+    );
+
+    Json(BalanceSyncResponse {
+        success: true,
+        balance_info: info,
+        message: format!(
+            "Balance percentage set to {}%, max allowed: {}",
+            (req.percentage * rust_decimal_macros::dec!(100)).round(),
+            info.max_allowed
+        ),
+    })
 }

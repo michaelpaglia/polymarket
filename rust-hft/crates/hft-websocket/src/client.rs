@@ -1,7 +1,7 @@
 //! High-performance WebSocket client for Polymarket
 
 use crate::messages::{BookMessage, PriceUpdate, SubscribeRequest, WsMessage};
-use crate::parser::parse_message;
+use crate::parser::{parse_all_books, parse_message};
 use arc_swap::ArcSwap;
 use flume::{Receiver, Sender};
 use futures_util::{SinkExt, StreamExt};
@@ -14,6 +14,45 @@ use tokio::sync::RwLock;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, error, info, warn};
 
+/// Proxy configuration for WebSocket connection
+#[derive(Debug, Clone)]
+pub struct ProxyConfig {
+    /// Proxy host (e.g., "premiumbeu.ahiddenproxy.com")
+    pub host: String,
+    /// Proxy port
+    pub port: u16,
+    /// Username for authentication
+    pub username: Option<String>,
+    /// Password for authentication
+    pub password: Option<String>,
+}
+
+impl ProxyConfig {
+    /// Create new proxy config from host:port:user:pass format
+    pub fn from_string(s: &str) -> Option<Self> {
+        let parts: Vec<&str> = s.split(':').collect();
+        if parts.len() >= 2 {
+            let host = parts[0].to_string();
+            let port = parts[1].parse().ok()?;
+            let username = parts.get(2).map(|s| s.to_string());
+            let password = parts.get(3).map(|s| s.to_string());
+            Some(Self { host, port, username, password })
+        } else {
+            None
+        }
+    }
+
+    /// Get proxy URL with auth
+    pub fn to_url(&self) -> String {
+        match (&self.username, &self.password) {
+            (Some(user), Some(pass)) => {
+                format!("http://{}:{}@{}:{}", user, pass, self.host, self.port)
+            }
+            _ => format!("http://{}:{}", self.host, self.port),
+        }
+    }
+}
+
 /// WebSocket configuration
 #[derive(Debug, Clone)]
 pub struct WebSocketConfig {
@@ -25,6 +64,8 @@ pub struct WebSocketConfig {
     pub reconnect_delay_ms: u64,
     /// Maximum reconnect attempts (0 = infinite)
     pub max_reconnect_attempts: u32,
+    /// Optional proxy configuration
+    pub proxy: Option<ProxyConfig>,
 }
 
 impl Default for WebSocketConfig {
@@ -34,7 +75,16 @@ impl Default for WebSocketConfig {
             ping_interval_ms: 10_000,
             reconnect_delay_ms: 1_000,
             max_reconnect_attempts: 0, // Infinite
+            proxy: None,
         }
+    }
+}
+
+impl WebSocketConfig {
+    /// Create config with proxy from string (host:port:user:pass)
+    pub fn with_proxy(mut self, proxy_str: &str) -> Self {
+        self.proxy = ProxyConfig::from_string(proxy_str);
+        self
     }
 }
 
@@ -254,6 +304,16 @@ impl WebSocketClient {
 
     /// Handle incoming message
     async fn handle_message(&self, text: &str) {
+        // First try to parse as array of books (common case)
+        let books = parse_all_books(text);
+        if !books.is_empty() {
+            for book in books {
+                self.handle_book_update(book).await;
+            }
+            return;
+        }
+
+        // Fall back to single message parsing
         match parse_message(text) {
             Ok(WsMessage::Book(book)) => {
                 self.handle_book_update(book).await;
