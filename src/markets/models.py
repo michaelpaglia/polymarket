@@ -115,7 +115,42 @@ class MarketMatch(BaseModel):
     llm_reasoning: str = ""
 
     @property
+    def time_urgency_score(self) -> float:
+        """
+        Score boost for soon-ending markets.
+
+        Markets ending sooner get higher priority since:
+        1. Information has more impact
+        2. Less time for market to correct
+        3. Higher alpha opportunity
+        """
+        days = self.market.days_to_resolution
+        if days is None:
+            return 0.5  # Unknown expiry = neutral
+
+        if days <= 1:
+            return 1.0  # Ending today/tomorrow - maximum urgency
+        elif days <= 3:
+            return 0.9  # Ending in 3 days
+        elif days <= 7:
+            return 0.8  # Ending this week
+        elif days <= 14:
+            return 0.7  # Ending in 2 weeks
+        elif days <= 30:
+            return 0.6  # Ending this month
+        else:
+            return 0.4  # Long-dated - lower priority
+
+    @property
     def combined_score(self) -> float:
-        """Combined relevance score."""
-        # Weight LLM confidence more heavily
-        return (self.similarity_score * 0.3) + (self.llm_confidence * 0.7)
+        """
+        Combined relevance score with time urgency.
+
+        Prioritizes:
+        1. LLM confidence (accuracy)
+        2. Time urgency (soon-ending markets)
+        3. Vector similarity (relevance)
+        """
+        base_score = (self.similarity_score * 0.2) + (self.llm_confidence * 0.5)
+        urgency_boost = self.time_urgency_score * 0.3
+        return base_score + urgency_boost

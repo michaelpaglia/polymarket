@@ -140,6 +140,8 @@ class TradeDecision(BaseModel):
             "market": self.market_question[:50] + "..." if len(self.market_question) > 50 else self.market_question,
             "action": self.action,
             "size_usd": f"${self.position_size_usd:.2f}",
+            "yes_price": f"{self.current_yes_price * 100:.1f}%",
+            "no_price": f"{self.current_no_price * 100:.1f}%",
             "confidence": f"{self.confidence_score:.0%}",
             "edge": self.edge_summary,
             "news_age_min": f"{self.time_since_news_minutes:.1f}",
@@ -151,6 +153,10 @@ class TradeDecision(BaseModel):
         status = "[PAPER]" if self.is_paper_trade else "[LIVE]"
         action_symbol = {"BUY_YES": "[YES]", "BUY_NO": "[NO]", "HOLD": "[---]"}.get(self.action, "[?]")
 
+        # Format prices as percentages (more intuitive for prediction markets)
+        yes_pct = self.current_yes_price * 100
+        no_pct = self.current_no_price * 100
+
         return f"""
 ========================================================================
 | {status} TRADE DECISION
@@ -159,7 +165,7 @@ class TradeDecision(BaseModel):
 | Age: {self.time_since_news_minutes:.0f} min | Source: {self.news_source}
 ------------------------------------------------------------------------
 | MARKET: {self.market_question[:55]}...
-| Prices: YES=${self.current_yes_price:.2f} | NO=${self.current_no_price:.2f}
+| Prices: YES={yes_pct:.1f}% | NO={no_pct:.1f}%
 ------------------------------------------------------------------------
 | {action_symbol} ACTION: {self.action} @ ${self.position_size_usd:.2f}
 | Confidence: {self.confidence_score:.0%}
