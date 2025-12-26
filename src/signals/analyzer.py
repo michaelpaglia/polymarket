@@ -78,6 +78,7 @@ class SignalAnalyzer:
         signal_settings: SignalSettings,
         risk_settings: RiskSettings,
         grok_api_key: str = "",
+        proxy_url: str = "",
     ) -> None:
         """
         Initialize the signal analyzer.
@@ -87,6 +88,7 @@ class SignalAnalyzer:
             signal_settings: Signal generation settings
             risk_settings: Risk management settings
             grok_api_key: Optional Grok API key for X sentiment
+            proxy_url: Optional proxy URL for API calls (EU proxy)
         """
         self.llm_settings = llm_settings
         self.signal_settings = signal_settings
@@ -99,9 +101,9 @@ class SignalAnalyzer:
             self._client = genai.Client(api_key=llm_settings.google_api_key)
             logger.info(f"Signal analyzer initialized with {llm_settings.model}")
 
-        # Configure X sentiment analyzer
+        # Configure X sentiment analyzer with optional proxy
         if grok_api_key:
-            self._sentiment_analyzer = XSentimentAnalyzer(grok_api_key)
+            self._sentiment_analyzer = XSentimentAnalyzer(grok_api_key, proxy_url=proxy_url)
             logger.info("X sentiment analyzer enabled for edge detection")
 
     async def analyze(

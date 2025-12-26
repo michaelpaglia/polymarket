@@ -47,6 +47,11 @@ class PolymarketBot:
         self.settings = settings
         self._running = False
 
+        # Load proxy configuration
+        self.proxy_url = settings.proxy.get_proxy_url() if settings.proxy.enabled else ""
+        if self.proxy_url:
+            logger.info("EU proxy enabled for API calls")
+
         # Initialize components
         self.polymarket_client = PolymarketClient(settings.polymarket)
         self.market_indexer = MarketIndexer(settings.markets)
@@ -57,6 +62,7 @@ class PolymarketBot:
             settings.signals,
             settings.risk,
             grok_api_key=settings.news.grok_api_key,  # Enable X sentiment edge
+            proxy_url=self.proxy_url,  # EU proxy for geo-bypass
         )
 
         # Market matcher (initialized after markets are loaded)
@@ -73,11 +79,14 @@ class PolymarketBot:
                 knowledge_graph=None,  # Will use dynamic topics
             )
 
-        # Position tracker - tracks open positions and manages exits
+        # Position tracker - Python module gets 50% of balance allocation
+        # (Rust module will use the other 50%)
+        max_exposure = settings.risk.max_portfolio_exposure_usd
         self.position_tracker = PositionTracker(
             max_positions=50,  # Can hold up to 50 positions
-            max_exposure_usd=settings.risk.max_portfolio_exposure_usd,
+            max_exposure_usd=max_exposure,  # Will be updated with 50% of balance
         )
+        self.balance_allocation_pct = settings.risk.balance_allocation_pct
 
         # Track paper trades
         self.paper_trades: list[TradingSignal] = []
@@ -109,11 +118,16 @@ class PolymarketBot:
             if self.polymarket_client.authenticate():
                 console.print("[green]Authentication: OK[/green]")
 
-                # Show balance for live trading
+                # Show balance and set 50% allocation for live trading
                 if not self.settings.paper_trading:
                     balance = self.polymarket_client.get_balance()
                     if balance > 0:
+                        # Python module gets 50% of balance (Rust gets the other 50%)
+                        python_allocation = balance * self.balance_allocation_pct
+                        self.position_tracker.max_exposure_usd = python_allocation
                         console.print(f"[green]USDC Balance: ${balance:.2f}[/green]")
+                        console.print(f"[cyan]Python module allocation: ${python_allocation:.2f} ({self.balance_allocation_pct:.0%})[/cyan]")
+                        console.print(f"[cyan]Rust module reserved: ${balance - python_allocation:.2f}[/cyan]")
                     else:
                         console.print("[red]WARNING: No USDC balance detected![/red]")
                         console.print("[yellow]You need USDC on Polygon to trade.[/yellow]")
@@ -678,6 +692,13 @@ def main() -> None:
 
     # Load settings
     settings = get_settings()
+
+    # Apply proxy settings BEFORE any API calls
+    if settings.proxy.enabled:
+        settings.proxy.apply_to_environment()
+        proxy_url = settings.proxy.get_proxy_url()
+        if proxy_url:
+            console.print(f"[cyan]Proxy enabled: {settings.proxy.host}:{settings.proxy.port}[/cyan]")
 
     # Override paper_trading based on command line
     if args.live:

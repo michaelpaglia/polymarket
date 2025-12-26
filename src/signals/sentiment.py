@@ -110,16 +110,26 @@ class XSentimentAnalyzer:
     5. Sentiment momentum - Shifting sentiment is predictive
     """
 
-    def __init__(self, api_key: str) -> None:
+    def __init__(self, api_key: str, proxy_url: str = "") -> None:
         """Initialize the sentiment analyzer."""
         self.api_key = api_key
+        self.proxy_url = proxy_url
         self._client: Optional[httpx.AsyncClient] = None
-        logger.info("Initialized X sentiment analyzer")
+        if proxy_url:
+            logger.info(f"Initialized X sentiment analyzer with EU proxy")
+        else:
+            logger.info("Initialized X sentiment analyzer")
 
     async def _get_client(self) -> httpx.AsyncClient:
-        """Get or create HTTP client."""
+        """Get or create HTTP client with optional proxy."""
         if self._client is None:
-            self._client = httpx.AsyncClient(timeout=60.0)
+            if self.proxy_url:
+                self._client = httpx.AsyncClient(
+                    timeout=60.0,
+                    proxy=self.proxy_url,
+                )
+            else:
+                self._client = httpx.AsyncClient(timeout=60.0)
         return self._client
 
     async def analyze_market_sentiment(

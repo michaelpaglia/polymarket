@@ -70,9 +70,78 @@ class RiskSettings(BaseSettings):
     """Risk management settings."""
 
     max_position_per_market_usd: float = 100.0
-    max_portfolio_exposure_usd: float = 500.0
+    max_portfolio_exposure_usd: float = 500.0  # Will be overridden to 50% of balance
     max_daily_trades: int = 20
     stop_loss_pct: float = 0.25
+    # Python module gets 50% of balance (Rust module gets the other 50%)
+    balance_allocation_pct: float = 0.50
+
+
+class ProxySettings(BaseSettings):
+    """Proxy configuration for bypassing geo-restrictions."""
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    enabled: bool = True
+    # Primary residential proxy (from .env)
+    host: str = Field(default="", alias="PROXY_HOST")
+    port: str = Field(default="", alias="PROXY_PORT")
+    user: str = Field(default="", alias="PROXY_USER")
+    password: str = Field(default="", alias="PROXY_PASS")
+    # Fallback proxy file
+    fallback_file: str = "eu_proxies.txt"
+    _current_fallback_index: int = 0
+
+    def get_proxy_url(self) -> str:
+        """Get formatted proxy URL for httpx/requests."""
+        if self.host and self.port and self.user and self.password:
+            return f"http://{self.user}:{self.password}@{self.host}:{self.port}"
+        return ""
+
+    def get_fallback_proxies(self) -> list[str]:
+        """Load fallback proxies from file."""
+        from pathlib import Path
+        proxy_path = Path(self.fallback_file)
+        if not proxy_path.exists():
+            return []
+
+        proxies = []
+        lines = proxy_path.read_text().strip().split("\n")
+        for line in lines:
+            line = line.strip()
+            if line and not line.startswith("#"):
+                parts = line.split(":")
+                if len(parts) >= 4:
+                    host, port, username = parts[0], parts[1], parts[2]
+                    password = ":".join(parts[3:])
+                    proxies.append(f"http://{username}:{password}@{host}:{port}")
+        return proxies
+
+    def get_next_fallback(self) -> str:
+        """Get next fallback proxy (rotates through list)."""
+        fallbacks = self.get_fallback_proxies()
+        if not fallbacks:
+            return ""
+        proxy = fallbacks[self._current_fallback_index % len(fallbacks)]
+        self._current_fallback_index += 1
+        return proxy
+
+    def apply_to_environment(self) -> None:
+        """Set HTTP_PROXY and HTTPS_PROXY environment variables."""
+        import os
+        proxy_url = self.get_proxy_url()
+        if proxy_url:
+            os.environ["HTTP_PROXY"] = proxy_url
+            os.environ["HTTPS_PROXY"] = proxy_url
+
+    def apply_fallback_to_environment(self) -> str:
+        """Apply next fallback proxy to environment. Returns the proxy URL."""
+        import os
+        proxy_url = self.get_next_fallback()
+        if proxy_url:
+            os.environ["HTTP_PROXY"] = proxy_url
+            os.environ["HTTPS_PROXY"] = proxy_url
+        return proxy_url
 
 
 class LoggingSettings(BaseSettings):
@@ -99,6 +168,7 @@ class Settings(BaseSettings):
     signals: SignalSettings = Field(default_factory=SignalSettings)
     risk: RiskSettings = Field(default_factory=RiskSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
+    proxy: ProxySettings = Field(default_factory=ProxySettings)
 
     # Trading mode
     paper_trading: bool = True
