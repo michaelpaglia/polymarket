@@ -1,0 +1,164 @@
+"""Configuration management for the Polymarket bot."""
+
+from pathlib import Path
+from typing import Any
+
+import yaml
+from dotenv import load_dotenv
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Load .env file at module import
+load_dotenv()
+
+
+class PolymarketSettings(BaseSettings):
+    """Polymarket API credentials."""
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    private_key: str = Field(default="", alias="POLYMARKET_PRIVATE_KEY")
+    funder_address: str = Field(default="", alias="POLYMARKET_FUNDER_ADDRESS")
+    host: str = "https://clob.polymarket.com"
+    chain_id: int = 137  # Polygon mainnet
+
+
+class LLMSettings(BaseSettings):
+    """LLM API settings."""
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    google_api_key: str = Field(default="", alias="GOOGLE_API_KEY")
+    provider: str = "google"
+    model: str = "gemini-3-flash-preview"
+
+
+class NewsSettings(BaseSettings):
+    """News API settings."""
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    newsapi_key: str = Field(default="", alias="NEWSAPI_KEY")
+    gnews_api_key: str = Field(default="", alias="GNEWS_API_KEY")
+    poll_interval_seconds: int = 60
+    sources: list[str] = ["newsapi", "gnews"]
+
+
+class MarketSettings(BaseSettings):
+    """Market matching settings."""
+
+    refresh_interval_minutes: int = 15
+    min_liquidity_usd: float = 1000.0
+    max_days_to_resolution: int = 30
+    top_k_matches: int = 5
+
+
+class SignalSettings(BaseSettings):
+    """Signal generation settings."""
+
+    confidence_threshold: float = 0.7
+    require_multi_source: bool = True
+
+
+class RiskSettings(BaseSettings):
+    """Risk management settings."""
+
+    max_position_per_market_usd: float = 100.0
+    max_portfolio_exposure_usd: float = 500.0
+    max_daily_trades: int = 20
+    stop_loss_pct: float = 0.25
+
+
+class LoggingSettings(BaseSettings):
+    """Logging settings."""
+
+    level: str = "INFO"
+    file: str = "logs/bot.log"
+
+
+class Settings(BaseSettings):
+    """Main settings container."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    # Sub-settings
+    polymarket: PolymarketSettings = Field(default_factory=PolymarketSettings)
+    llm: LLMSettings = Field(default_factory=LLMSettings)
+    news: NewsSettings = Field(default_factory=NewsSettings)
+    markets: MarketSettings = Field(default_factory=MarketSettings)
+    signals: SignalSettings = Field(default_factory=SignalSettings)
+    risk: RiskSettings = Field(default_factory=RiskSettings)
+    logging: LoggingSettings = Field(default_factory=LoggingSettings)
+
+    # Trading mode
+    paper_trading: bool = True
+
+
+def load_config(config_path: str = "config.yaml") -> dict[str, Any]:
+    """Load configuration from YAML file."""
+    path = Path(config_path)
+    if path.exists():
+        with open(path) as f:
+            return yaml.safe_load(f)
+    return {}
+
+
+def get_settings(config_path: str = "config.yaml") -> Settings:
+    """Get settings from environment and config file."""
+    # Load YAML config
+    yaml_config = load_config(config_path)
+
+    # Create settings, merging YAML with env vars
+    settings = Settings()
+
+    # Override with YAML values if present
+    if yaml_config:
+        if "paper_trading" in yaml_config:
+            settings.paper_trading = yaml_config["paper_trading"]
+
+        if "news" in yaml_config:
+            for key, value in yaml_config["news"].items():
+                if hasattr(settings.news, key):
+                    setattr(settings.news, key, value)
+
+        if "markets" in yaml_config:
+            for key, value in yaml_config["markets"].items():
+                if hasattr(settings.markets, key):
+                    setattr(settings.markets, key, value)
+
+        if "signals" in yaml_config:
+            for key, value in yaml_config["signals"].items():
+                if hasattr(settings.signals, key):
+                    setattr(settings.signals, key, value)
+                if key == "llm_provider":
+                    settings.llm.provider = value
+                if key == "model":
+                    settings.llm.model = value
+
+        if "risk" in yaml_config:
+            for key, value in yaml_config["risk"].items():
+                if hasattr(settings.risk, key):
+                    setattr(settings.risk, key, value)
+
+        if "logging" in yaml_config:
+            for key, value in yaml_config["logging"].items():
+                if hasattr(settings.logging, key):
+                    setattr(settings.logging, key, value)
+
+    return settings
+
+
+# Global settings instance
+_settings: Settings | None = None
+
+
+def get_global_settings() -> Settings:
+    """Get or create global settings instance."""
+    global _settings
+    if _settings is None:
+        _settings = get_settings()
+    return _settings
