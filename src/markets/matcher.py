@@ -175,18 +175,36 @@ class MarketMatcher:
         )
 
         try:
-            # Call Gemini 3
-            response = self._client.models.generate_content(
-                model=self.llm_settings.model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0.1,
-                    response_mime_type="application/json",
-                ),
-            )
+            # Retry logic for transient network errors
+            max_retries = 3
+            response_text = "{}"
 
-            # Parse response
-            response_text = response.text or "{}"
+            for attempt in range(max_retries):
+                try:
+                    # Call Gemini 3
+                    response = self._client.models.generate_content(
+                        model=self.llm_settings.model,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            temperature=0.1,
+                            response_mime_type="application/json",
+                        ),
+                    )
+                    response_text = response.text or "{}"
+                    break  # Success
+
+                except Exception as e:
+                    error_str = str(e).lower()
+                    is_transient = any(x in error_str for x in ["disconnect", "timeout", "connection", "reset"])
+
+                    if is_transient and attempt < max_retries - 1:
+                        import time
+                        wait_time = (attempt + 1) * 2
+                        logger.warning(f"LLM request failed, retrying in {wait_time}s", attempt=attempt+1, error=str(e))
+                        time.sleep(wait_time)
+                    else:
+                        raise
+
             result: dict[str, Any] = json.loads(response_text)
             matches = []
 
