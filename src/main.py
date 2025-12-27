@@ -663,8 +663,20 @@ class PolymarketBot:
             console.print("\nNo trades executed this session")
 
 
+async def run_bot(settings: Settings) -> None:
+    """Run the bot with given settings (async entry point)."""
+    bot = PolymarketBot(settings)
+
+    try:
+        await bot.start()
+    except asyncio.CancelledError:
+        console.print("\n[yellow]Cancelled[/yellow]")
+    finally:
+        await bot.stop()
+
+
 def main() -> None:
-    """Main entry point."""
+    """Main entry point (CLI)."""
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Polymarket Trading Bot")
     parser.add_argument(
@@ -716,26 +728,43 @@ def main() -> None:
         log_file=settings.logging.file,
     )
 
-    # Create and run bot
-    bot = PolymarketBot(settings)
-
     # Handle shutdown
     def shutdown_handler(sig, frame):
         console.print("\n[yellow]Shutting down...[/yellow]")
-        asyncio.create_task(bot.stop())
 
     signal.signal(signal.SIGINT, shutdown_handler)
     signal.signal(signal.SIGTERM, shutdown_handler)
 
     # Run
     try:
-        asyncio.run(bot.start())
+        asyncio.run(run_bot(settings))
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted[/yellow]")
     except Exception as e:
         console.print(f"\n[red]Fatal error: {e}[/red]")
         logger.exception("Fatal error")
         sys.exit(1)
+
+
+async def main_async() -> None:
+    """Async entry point for use from run_all.py."""
+    settings = get_settings()
+
+    # Check for live trading env var (set by run_all.py)
+    if os.environ.get("LIVE_TRADING", "").lower() == "true":
+        settings.paper_trading = False
+
+    # Apply proxy settings
+    if settings.proxy.enabled:
+        settings.proxy.apply_to_environment()
+
+    # Setup logging
+    setup_logging(
+        level=settings.logging.level,
+        log_file=settings.logging.file,
+    )
+
+    await run_bot(settings)
 
 
 if __name__ == "__main__":
