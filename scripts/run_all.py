@@ -279,21 +279,14 @@ class TradingSystem:
         """Run the Python sentiment bot."""
         try:
             # Import here to avoid circular imports
-            from src.main import main as sentiment_main
+            from src.main import main_async
 
             # Override paper trading setting
             os.environ["PAPER_TRADING"] = str(self.paper_trading).lower()
-
-            # Clear sys.argv so sentiment bot's argparser doesn't see run_all.py args
-            original_argv = sys.argv.copy()
-            sys.argv = [sys.argv[0]]
             if not self.paper_trading:
-                sys.argv.append("--live")
+                os.environ["LIVE_TRADING"] = "true"
 
-            try:
-                await sentiment_main()
-            finally:
-                sys.argv = original_argv
+            await main_async()
         except Exception as e:
             print(f"[SENTIMENT] Error: {e}")
             import traceback
