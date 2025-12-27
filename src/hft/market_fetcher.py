@@ -27,6 +27,7 @@ class Market:
 async def fetch_all_markets(
     min_liquidity: float = 1000.0,
     min_volume_24h: float = 100.0,
+    no_filter: bool = False,
 ) -> list[Market]:
     """
     Fetch all open markets from Polymarket.
@@ -34,13 +35,14 @@ async def fetch_all_markets(
     Args:
         min_liquidity: Minimum liquidity in USD (filter out tiny markets)
         min_volume_24h: Minimum 24h volume in USD
+        no_filter: If True, skip all filters and return ALL markets
 
     Returns:
         List of Market objects with token IDs
     """
     markets = []
     offset = 0
-    limit = 100
+    limit = 500  # Larger batches for faster fetching
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         while True:
@@ -68,15 +70,17 @@ async def fetch_all_markets(
                     liquidity = float(m.get("liquidityNum", 0) or 0)
                     volume_24h = float(m.get("volume24hr", 0) or 0)
 
-                    # Filter by liquidity and volume
-                    if liquidity < min_liquidity:
-                        continue
-                    if volume_24h < min_volume_24h:
-                        continue
+                    # Apply filters unless no_filter is True
+                    if not no_filter:
+                        # Filter by liquidity and volume
+                        if liquidity < min_liquidity:
+                            continue
+                        if volume_24h < min_volume_24h:
+                            continue
 
-                    # Check if orderbook is enabled
-                    if not m.get("enableOrderBook", False):
-                        continue
+                        # Check if orderbook is enabled
+                        if not m.get("enableOrderBook", False):
+                            continue
 
                     markets.append(Market(
                         market_id=m.get("slug", m.get("id", "")),
@@ -161,6 +165,7 @@ async def connect_and_subscribe_all(
     min_liquidity: float = 1000.0,
     min_volume_24h: float = 100.0,
     top_n: Optional[int] = None,
+    no_filter: bool = False,
 ) -> dict:
     """
     Fetch all markets and subscribe to HFT server.
@@ -170,16 +175,22 @@ async def connect_and_subscribe_all(
         min_liquidity: Minimum liquidity filter
         min_volume_24h: Minimum 24h volume filter
         top_n: Only subscribe to top N markets by liquidity (None = all)
+        no_filter: If True, subscribe to ALL markets without filtering
 
     Returns:
         Dict with stats
     """
-    print("Fetching all open markets from Polymarket...")
+    if no_filter:
+        print("Fetching ALL open markets from Polymarket (no filters)...")
+    else:
+        print("Fetching open markets from Polymarket...")
     markets = await fetch_all_markets(
         min_liquidity=min_liquidity,
         min_volume_24h=min_volume_24h,
+        no_filter=no_filter,
     )
 
+    total_fetched = len(markets)
     print(f"Found {len(markets)} markets meeting criteria")
 
     if top_n:
@@ -218,6 +229,9 @@ async def connect_and_subscribe_all(
         for err in stats["errors"][:5]:
             print(f"  {err}")
 
+    # Add skipped count for compatibility
+    stats["skipped"] = 0  # All fetched markets are subscribed
+
     return stats
 
 
@@ -230,6 +244,7 @@ async def main():
     parser.add_argument("--min-liquidity", type=float, default=1000.0, help="Min liquidity USD")
     parser.add_argument("--min-volume", type=float, default=100.0, help="Min 24h volume USD")
     parser.add_argument("--top", type=int, default=None, help="Only top N markets")
+    parser.add_argument("--no-filter", action="store_true", help="Subscribe ALL markets without filters")
 
     args = parser.parse_args()
 
@@ -238,6 +253,7 @@ async def main():
         min_liquidity=args.min_liquidity,
         min_volume_24h=args.min_volume,
         top_n=args.top,
+        no_filter=args.no_filter,
     )
 
 
