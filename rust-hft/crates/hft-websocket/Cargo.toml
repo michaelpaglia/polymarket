@@ -18,3 +18,5 @@ thiserror.workspace = true
 anyhow.workspace = true
 rust_decimal.workspace = true
 chrono.workspace = true
+base64.workspace = true
+native-tls.workspace = true
