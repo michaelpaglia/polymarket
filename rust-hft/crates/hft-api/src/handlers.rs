@@ -559,13 +559,13 @@ pub async fn sync_balance(
 
     Json(BalanceSyncResponse {
         success: true,
-        balance_info: info,
+        balance_info: info.clone(),
         message: format!(
             "Balance synced: {} total, {} max for HFT ({}%), {} available",
             req.account_balance_usd,
-            state.risk_manager.balance_info().max_allowed,
-            (state.risk_manager.balance_info().max_percentage * rust_decimal_macros::dec!(100)).round(),
-            state.risk_manager.balance_info().available_capital
+            info.max_allowed,
+            (info.max_percentage * rust_decimal_macros::dec!(100)).round(),
+            info.available_capital
         ),
     })
 }
@@ -600,7 +600,7 @@ pub async fn set_balance_percentage(
 
     Json(BalanceSyncResponse {
         success: true,
-        balance_info: info,
+        balance_info: info.clone(),
         message: format!(
             "Balance percentage set to {}%, max allowed: {}",
             (req.percentage * rust_decimal_macros::dec!(100)).round(),
