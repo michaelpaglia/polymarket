@@ -34,9 +34,9 @@ httpx>=0.27
 # Polymarket CLOB client
 py-clob-client>=0.20
 
-# Vector embeddings
+# Vector embeddings (for semantic market search)
 sentence-transformers>=2.2
-chromadb>=0.4
+faiss-cpu>=1.7
 
 # Web scraping (for news)
 aiohttp>=3.9
