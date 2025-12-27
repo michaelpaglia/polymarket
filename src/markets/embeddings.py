@@ -1,10 +1,12 @@
 """Vector embeddings and database for market semantic search."""
 
+import json
+import pickle
 from pathlib import Path
-from typing import Any, Optional, cast
+from typing import Any, Optional
 
-import chromadb
-from chromadb.config import Settings as ChromaSettings
+import faiss
+import numpy as np
 from sentence_transformers import SentenceTransformer
 
 from src.markets.models import Market
@@ -21,19 +23,19 @@ class MarketEmbeddings:
     """
     Manages vector embeddings for Polymarket markets.
 
-    Uses ChromaDB for storage and sentence-transformers for embeddings.
+    Uses FAISS for vector search and sentence-transformers for embeddings.
     """
 
     def __init__(
         self,
-        persist_directory: str = "data/chroma",
+        persist_directory: str = "data/faiss",
         model_name: str = DEFAULT_MODEL,
     ) -> None:
         """
         Initialize the embeddings manager.
 
         Args:
-            persist_directory: Directory for ChromaDB persistence
+            persist_directory: Directory for FAISS persistence
             model_name: Sentence transformer model to use
         """
         self.persist_directory = Path(persist_directory)
@@ -45,27 +47,57 @@ class MarketEmbeddings:
         # Initialize embedding model
         logger.info(f"Loading embedding model: {model_name}")
         self._model = SentenceTransformer(model_name)
+        self._dimension = self._model.get_sentence_embedding_dimension()
 
-        # Initialize ChromaDB
-        self._client = chromadb.PersistentClient(
-            path=str(self.persist_directory),
-            settings=ChromaSettings(
-                anonymized_telemetry=False,
-            ),
-        )
+        # Initialize FAISS index (cosine similarity via inner product on normalized vectors)
+        self._index: Optional[faiss.IndexFlatIP] = None
+        self._documents: list[str] = []
+        self._metadatas: list[dict[str, Any]] = []
+        self._ids: list[str] = []
 
-        # Get or create collection
-        self._collection = self._client.get_or_create_collection(
-            name="polymarket_markets",
-            metadata={"hnsw:space": "cosine"},  # Use cosine similarity
-        )
+        # Try to load existing index
+        self._load_index()
 
         logger.info(
             "MarketEmbeddings initialized",
             persist_directory=str(self.persist_directory),
             model=model_name,
-            collection_count=self._collection.count(),
+            collection_count=len(self._ids),
         )
+
+    def _load_index(self) -> None:
+        """Load existing index from disk if available."""
+        index_path = self.persist_directory / "index.faiss"
+        meta_path = self.persist_directory / "metadata.pkl"
+
+        if index_path.exists() and meta_path.exists():
+            try:
+                self._index = faiss.read_index(str(index_path))
+                with open(meta_path, "rb") as f:
+                    data = pickle.load(f)
+                    self._ids = data["ids"]
+                    self._documents = data["documents"]
+                    self._metadatas = data["metadatas"]
+                logger.info(f"Loaded {len(self._ids)} markets from disk")
+            except Exception as e:
+                logger.warning(f"Failed to load index: {e}")
+                self._index = None
+
+    def _save_index(self) -> None:
+        """Save index to disk."""
+        if self._index is None:
+            return
+
+        index_path = self.persist_directory / "index.faiss"
+        meta_path = self.persist_directory / "metadata.pkl"
+
+        faiss.write_index(self._index, str(index_path))
+        with open(meta_path, "wb") as f:
+            pickle.dump({
+                "ids": self._ids,
+                "documents": self._documents,
+                "metadatas": self._metadatas,
+            }, f)
 
     def embed_text(self, text: str) -> list[float]:
         """
@@ -77,9 +109,10 @@ class MarketEmbeddings:
         Returns:
             Embedding vector
         """
-        return self._model.encode(text, convert_to_tensor=False).tolist()
+        embedding = self._model.encode(text, convert_to_tensor=False, normalize_embeddings=True)
+        return embedding.tolist()
 
-    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+    def embed_texts(self, texts: list[str]) -> np.ndarray:
         """
         Generate embeddings for multiple texts.
 
@@ -87,10 +120,10 @@ class MarketEmbeddings:
             texts: List of texts to embed
 
         Returns:
-            List of embedding vectors
+            Numpy array of embedding vectors (normalized for cosine similarity)
         """
-        embeddings = self._model.encode(texts, convert_to_tensor=False)
-        return [e.tolist() for e in embeddings]
+        embeddings = self._model.encode(texts, convert_to_tensor=False, normalize_embeddings=True)
+        return np.array(embeddings, dtype=np.float32)
 
     def index_markets(self, markets: list[Market]) -> int:
         """
@@ -105,26 +138,17 @@ class MarketEmbeddings:
         if not markets:
             return 0
 
-        # Clear existing collection
-        self._client.delete_collection("polymarket_markets")
-        self._collection = self._client.create_collection(
-            name="polymarket_markets",
-            metadata={"hnsw:space": "cosine"},
-        )
-
-        # Prepare data for indexing
-        ids = []
-        documents = []
-        metadatas = []
-        embeddings = []
+        # Clear existing data
+        self._ids = []
+        self._documents = []
+        self._metadatas = []
 
         for market in markets:
-            # Generate embedding text
             embed_text = market.embedding_text
 
-            ids.append(market.condition_id)
-            documents.append(embed_text)
-            metadatas.append({
+            self._ids.append(market.condition_id)
+            self._documents.append(embed_text)
+            self._metadatas.append({
                 "question": market.question,
                 "category": market.category,
                 "liquidity": market.liquidity,
@@ -136,16 +160,15 @@ class MarketEmbeddings:
             })
 
         # Generate embeddings in batch
-        logger.info(f"Generating embeddings for {len(documents)} markets...")
-        embeddings = self.embed_texts(documents)
+        logger.info(f"Generating embeddings for {len(self._documents)} markets...")
+        embeddings = self.embed_texts(self._documents)
 
-        # Add to collection - cast embeddings for chromadb compatibility
-        self._collection.add(
-            ids=ids,
-            documents=documents,
-            metadatas=metadatas,  # type: ignore[arg-type]
-            embeddings=cast(Any, embeddings),
-        )
+        # Create FAISS index (Inner Product for cosine similarity on normalized vectors)
+        self._index = faiss.IndexFlatIP(self._dimension)
+        self._index.add(embeddings)
+
+        # Save to disk
+        self._save_index()
 
         logger.info(f"Indexed {len(markets)} markets into vector database")
         return len(markets)
@@ -167,48 +190,59 @@ class MarketEmbeddings:
         Returns:
             List of search results with scores
         """
-        # Generate query embedding
-        query_embedding = self.embed_text(query)
+        if self._index is None or len(self._ids) == 0:
+            return []
 
-        # Build where clause for filtering
-        where_clause: dict[str, Any] | None = None
-        if min_liquidity is not None:
-            where_clause = {"liquidity": {"$gte": min_liquidity}}
+        # Generate query embedding (normalized)
+        query_embedding = np.array([self.embed_text(query)], dtype=np.float32)
+
+        # Search more results than needed if filtering
+        search_k = n_results * 3 if min_liquidity else n_results
 
         # Search
-        results = self._collection.query(
-            query_embeddings=[query_embedding],
-            n_results=n_results,
-            where=where_clause,  # type: ignore[arg-type]
-            include=["documents", "metadatas", "distances"],
-        )
+        scores, indices = self._index.search(query_embedding, min(search_k, len(self._ids)))
 
-        # Format results
+        # Format results with filtering
         formatted = []
-        if results and results["ids"]:
-            for i, condition_id in enumerate(results["ids"][0]):
-                # Convert distance to similarity (cosine distance to similarity)
-                distance = results["distances"][0][i] if results["distances"] else 0
-                similarity = 1 - distance  # Cosine similarity
+        for i, idx in enumerate(indices[0]):
+            if idx < 0:  # FAISS returns -1 for empty slots
+                continue
 
-                formatted.append({
-                    "condition_id": condition_id,
-                    "document": results["documents"][0][i] if results["documents"] else "",
-                    "metadata": results["metadatas"][0][i] if results["metadatas"] else {},
-                    "similarity": similarity,
-                })
+            metadata = self._metadatas[idx]
+
+            # Apply liquidity filter
+            if min_liquidity is not None and metadata["liquidity"] < min_liquidity:
+                continue
+
+            formatted.append({
+                "condition_id": self._ids[idx],
+                "document": self._documents[idx],
+                "metadata": metadata,
+                "similarity": float(scores[0][i]),  # Already cosine similarity (0-1)
+            })
+
+            if len(formatted) >= n_results:
+                break
 
         return formatted
 
     def get_collection_count(self) -> int:
         """Get the number of indexed markets."""
-        return self._collection.count()
+        return len(self._ids)
 
     def clear(self) -> None:
         """Clear all indexed markets."""
-        self._client.delete_collection("polymarket_markets")
-        self._collection = self._client.create_collection(
-            name="polymarket_markets",
-            metadata={"hnsw:space": "cosine"},
-        )
+        self._index = None
+        self._ids = []
+        self._documents = []
+        self._metadatas = []
+
+        # Remove persisted files
+        index_path = self.persist_directory / "index.faiss"
+        meta_path = self.persist_directory / "metadata.pkl"
+        if index_path.exists():
+            index_path.unlink()
+        if meta_path.exists():
+            meta_path.unlink()
+
         logger.info("Market embeddings cleared")
