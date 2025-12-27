@@ -163,7 +163,7 @@ async fn connect_via_proxy(
         .map_err(|e| HftError::WebSocketConnection(format!("Failed to read proxy response: {}", e)))?;
 
     // Check for 200 OK
-    if !response_line.contains("200") {
+    if !response_line.contains(" 200 ") && !response_line.starts_with("HTTP/1.1 200") && !response_line.starts_with("HTTP/1.0 200") {
         return Err(HftError::WebSocketConnection(format!(
             "Proxy CONNECT failed: {}", response_line.trim()
         )));
