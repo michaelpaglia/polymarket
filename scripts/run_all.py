@@ -284,9 +284,20 @@ class TradingSystem:
             # Override paper trading setting
             os.environ["PAPER_TRADING"] = str(self.paper_trading).lower()
 
-            await sentiment_main()
+            # Clear sys.argv so sentiment bot's argparser doesn't see run_all.py args
+            original_argv = sys.argv.copy()
+            sys.argv = [sys.argv[0]]
+            if not self.paper_trading:
+                sys.argv.append("--live")
+
+            try:
+                await sentiment_main()
+            finally:
+                sys.argv = original_argv
         except Exception as e:
             print(f"[SENTIMENT] Error: {e}")
+            import traceback
+            traceback.print_exc()
 
     async def stop(self) -> None:
         """Stop all modules gracefully."""
