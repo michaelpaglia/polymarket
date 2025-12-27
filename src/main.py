@@ -360,14 +360,25 @@ class PolymarketBot:
                 self.settings.risk.max_position_per_market_usd,
             )
 
-            # Check if we can open this position
+            # Check if we can open this position, adjust size if needed
             can_open, reason = self.position_tracker.can_open_position(
                 position_size, market.condition_id
             )
 
             if not can_open:
-                console.print(f"[dim]Skipping Twitter signal: {reason}[/dim]")
-                return
+                # Check if it's a capital issue - use what's available
+                if "Insufficient capital" in reason:
+                    available = self.position_tracker.available_capital_usd
+                    min_trade = 5.0  # Minimum trade size
+                    if available >= min_trade:
+                        position_size = available
+                        console.print(f"[yellow]Reduced Twitter position to ${position_size:.2f} (available)[/yellow]")
+                    else:
+                        console.print(f"[dim]Skipping Twitter signal: Not enough capital[/dim]")
+                        return
+                else:
+                    console.print(f"[dim]Skipping Twitter signal: {reason}[/dim]")
+                    return
 
             decision = TradeDecision(
                 decision_id=str(uuid.uuid4())[:8],
@@ -535,14 +546,28 @@ class PolymarketBot:
             is_paper_trade=self.settings.paper_trading,
         )
 
-        # Check if we can open this position
+        # Check if we can open this position, adjust size if needed
+        trade_size = signal.suggested_size_usd
         can_open, reason = self.position_tracker.can_open_position(
-            signal.suggested_size_usd, signal.market_id
+            trade_size, signal.market_id
         )
 
         if not can_open:
-            console.print(f"[dim]Skipping: {reason}[/dim]")
-            return
+            # Check if it's a capital issue - use what's available
+            if "Insufficient capital" in reason:
+                available = self.position_tracker.available_capital_usd
+                min_trade = 5.0  # Minimum trade size
+                if available >= min_trade:
+                    trade_size = available
+                    console.print(f"[yellow]Reduced position size to ${trade_size:.2f} (available capital)[/yellow]")
+                    # Update the decision with new size
+                    decision.position_size_usd = trade_size
+                else:
+                    console.print(f"[dim]Skipping: Not enough capital (${available:.2f} < ${min_trade:.2f} min)[/dim]")
+                    return
+            else:
+                console.print(f"[dim]Skipping: {reason}[/dim]")
+                return
 
         # Store and print the decision
         self.trade_decisions.append(decision)
@@ -558,7 +583,7 @@ class PolymarketBot:
             market_question=signal.market_question,
             side=position_side,
             entry_price=entry_price,
-            size_usd=signal.suggested_size_usd,
+            size_usd=trade_size,
             market_end_date=market.end_date if market else None,
             is_paper=self.settings.paper_trading,
             signal_id=signal.signal_id,
