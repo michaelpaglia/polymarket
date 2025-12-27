@@ -523,29 +523,6 @@ class PolymarketBot:
         else:
             action = "HOLD"
 
-        # Create structured trade decision
-        decision = TradeDecision(
-            decision_id=str(uuid.uuid4())[:8],
-            news_headline=article.title if article else "",
-            news_source=article.source if article else "",
-            news_published_at=article.published_at if article else None,
-            time_since_news_minutes=time_since_news,
-            market_question=signal.market_question,
-            market_condition_id=signal.market_id,
-            current_yes_price=signal.current_yes_price,
-            current_no_price=signal.current_no_price,
-            market_liquidity_usd=market.liquidity if market else 0.0,
-            action=action,
-            position_size_usd=signal.suggested_size_usd,
-            target_price=signal.current_yes_price if action == "BUY_YES" else signal.current_no_price,
-            edge_summary=f"{freshness} news impacts {signal.direction.value} probability",
-            confidence_score=signal.confidence,
-            reasoning=signal.reasoning,
-            news_freshness=freshness,
-            source_credibility="HIGH" if article and article.source in ["Reuters", "AP", "BBC", "CNN"] else "MEDIUM",
-            is_paper_trade=self.settings.paper_trading,
-        )
-
         # Check if we can open this position, adjust size if needed
         trade_size = signal.suggested_size_usd
         can_open, reason = self.position_tracker.can_open_position(
@@ -560,14 +537,35 @@ class PolymarketBot:
                 if available >= min_trade:
                     trade_size = available
                     console.print(f"[yellow]Reduced position size to ${trade_size:.2f} (available capital)[/yellow]")
-                    # Update the decision with new size
-                    decision.position_size_usd = trade_size
                 else:
                     console.print(f"[dim]Skipping: Not enough capital (${available:.2f} < ${min_trade:.2f} min)[/dim]")
                     return
             else:
                 console.print(f"[dim]Skipping: {reason}[/dim]")
                 return
+
+        # Create structured trade decision with adjusted size
+        decision = TradeDecision(
+            decision_id=str(uuid.uuid4())[:8],
+            news_headline=article.title if article else "",
+            news_source=article.source if article else "",
+            news_published_at=article.published_at if article else None,
+            time_since_news_minutes=time_since_news,
+            market_question=signal.market_question,
+            market_condition_id=signal.market_id,
+            current_yes_price=signal.current_yes_price,
+            current_no_price=signal.current_no_price,
+            market_liquidity_usd=market.liquidity if market else 0.0,
+            action=action,
+            position_size_usd=trade_size,
+            target_price=signal.current_yes_price if action == "BUY_YES" else signal.current_no_price,
+            edge_summary=f"{freshness} news impacts {signal.direction.value} probability",
+            confidence_score=signal.confidence,
+            reasoning=signal.reasoning,
+            news_freshness=freshness,
+            source_credibility="HIGH" if article and article.source in ["Reuters", "AP", "BBC", "CNN"] else "MEDIUM",
+            is_paper_trade=self.settings.paper_trading,
+        )
 
         # Store and print the decision
         self.trade_decisions.append(decision)
