@@ -595,15 +595,15 @@ class PolymarketBot:
                 "Position opened",
                 market=signal.market_question[:50],
                 direction=signal.direction.value,
-                size=signal.suggested_size_usd,
+                size=trade_size,
                 edge=decision.edge_summary,
             )
 
         if not self.settings.paper_trading:
-            # Live trade
-            await self._execute_trade(signal)
+            # Live trade - use adjusted trade_size, not original suggested_size_usd
+            await self._execute_trade(signal, trade_size)
 
-    async def _execute_trade(self, signal: TradingSignal) -> None:
+    async def _execute_trade(self, signal: TradingSignal, amount_usd: float) -> None:
         """Execute a live trade."""
         if not signal.target_token_id:
             logger.warning("No target token ID for signal")
@@ -612,7 +612,7 @@ class PolymarketBot:
         result = self.polymarket_client.place_market_order(
             token_id=signal.target_token_id,
             side="BUY",
-            amount_usd=signal.suggested_size_usd,
+            amount_usd=amount_usd,
         )
 
         if result.success:
