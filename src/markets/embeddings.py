@@ -1,6 +1,5 @@
 """Vector embeddings and database for market semantic search."""
 
-import json
 import pickle
 from pathlib import Path
 from typing import Any, Optional
