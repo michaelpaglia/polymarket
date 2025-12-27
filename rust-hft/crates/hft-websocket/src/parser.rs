@@ -21,6 +21,8 @@ pub fn parse_message(text: &str) -> Result<WsMessage, HftError> {
         Some("price_change") => parse_price_change(text),
         Some("last_trade_price") => parse_last_trade(text),
         Some("tick_size_change") => parse_tick_size(text),
+        // Batch price_changes - silently ignore (we use book updates for orderbook state)
+        Some("price_changes_batch") => Ok(WsMessage::Unknown(text.to_string())),
         _ => {
             warn!(text = &text[..text.len().min(200)], "Unknown message type");
             Ok(WsMessage::Unknown(text.to_string()))
@@ -186,6 +188,13 @@ fn detect_event_type(text: &str) -> Option<String> {
             }
         }
     }
+
+    // Check for batch price_changes format (no event_type field)
+    // Format: {"market":"0x...", "price_changes":[...]}
+    if text.contains("\"price_changes\"") {
+        return Some("price_changes_batch".to_string());
+    }
+
     None
 }
 

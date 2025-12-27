@@ -161,21 +161,40 @@ async fn main() -> Result<()> {
     };
     let detector = Arc::new(ArbitrageDetector::new(arb_config));
 
-    // Initialize WebSocket client with optional proxy
-    let mut ws_config = WebSocketConfig {
+    // Initialize WebSocket client with optional proxy rotation
+    let ws_config = WebSocketConfig {
         url: config.polymarket.ws_url.clone(),
         ..Default::default()
     };
 
-    // Load proxy from environment if set (format: host:port:user:pass)
-    if let Ok(proxy_str) = std::env::var("HFT_PROXY") {
-        ws_config = ws_config.with_proxy(&proxy_str);
-        if let Some(ref proxy) = ws_config.proxy {
-            info!(host = %proxy.host, port = proxy.port, "Proxy configured");
+    // Load proxies from file or environment
+    let proxy_file = std::env::var("HFT_PROXY_FILE").unwrap_or_else(|_| "eu_proxies.txt".to_string());
+    let ws_client = if std::path::Path::new(&proxy_file).exists() {
+        match hft_websocket::ProxyRotator::from_file(&proxy_file) {
+            Ok(rotator) => {
+                info!(
+                    count = rotator.len(),
+                    path = %proxy_file,
+                    "Proxy rotation enabled - will rotate on reconnect"
+                );
+                Arc::new(WebSocketClient::with_proxy_rotator(ws_config, rotator))
+            }
+            Err(e) => {
+                warn!(error = %e, path = %proxy_file, "Failed to load proxy file, using direct connection");
+                Arc::new(WebSocketClient::new(ws_config))
+            }
         }
-    }
-
-    let ws_client = Arc::new(WebSocketClient::new(ws_config));
+    } else if let Ok(proxy_str) = std::env::var("HFT_PROXY") {
+        // Fallback to single proxy from environment
+        let config_with_proxy = ws_config.with_proxy(&proxy_str);
+        if let Some(ref proxy) = config_with_proxy.proxy {
+            info!(host = %proxy.host, port = proxy.port, "Single proxy configured from env");
+        }
+        Arc::new(WebSocketClient::new(config_with_proxy))
+    } else {
+        info!("No proxy configured, using direct connection");
+        Arc::new(WebSocketClient::new(ws_config))
+    };
 
     // Create application state with WebSocket and arbitrage detector
     let app_state = Arc::new(AppState::with_ws(
