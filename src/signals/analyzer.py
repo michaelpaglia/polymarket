@@ -238,6 +238,33 @@ class SignalAnalyzer:
             except ValueError:
                 direction = SignalDirection.HOLD
 
+            # Apply extreme probability filter - no edge in already-decided markets
+            # This prevents trades like buying NO at 99.8% where there's no edge
+            yes_price = match.market.yes_price
+            if yes_price >= 0.95 or yes_price <= 0.05:
+                # Market is at extreme probability, no edge
+                logger.debug(
+                    f"Skipping extreme probability: YES={yes_price:.0%}",
+                    market=match.market.question[:40],
+                )
+                direction = SignalDirection.HOLD
+
+            # Apply price threshold filter (aligned with signal_model.py)
+            if direction == SignalDirection.YES and yes_price >= 0.75:
+                # Already priced in for bullish
+                logger.debug(
+                    f"Skipping bullish: YES={yes_price:.0%} (already priced in)",
+                    market=match.market.question[:40],
+                )
+                direction = SignalDirection.HOLD
+            elif direction == SignalDirection.NO and yes_price <= 0.25:
+                # Already priced in for bearish
+                logger.debug(
+                    f"Skipping bearish: YES={yes_price:.0%} (already priced in)",
+                    market=match.market.question[:40],
+                )
+                direction = SignalDirection.HOLD
+
             # Determine target token
             target_token_id = ""
             if direction == SignalDirection.YES:
