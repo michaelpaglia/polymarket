@@ -62,7 +62,7 @@ def main():
         side = trade.get("outcome", "Unknown")
 
         print(f"Found recent trade:")
-        print(f"  Token ID: {token_id[:20]}...")
+        print(f"  Token ID: {token_id[:min(20, len(token_id))]}...")
         print(f"  Side: {side}")
         print(f"  Shares: {shares}")
         print(f"  Entry price: {entry_price}")
