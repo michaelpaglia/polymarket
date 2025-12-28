@@ -173,8 +173,18 @@ class PositionTracker:
 
     @property
     def total_exposure_usd(self) -> float:
-        """Total USD exposed across all positions."""
+        """Total USD exposed across all positions (paper + live)."""
         return sum(p.current_value_usd for p in self.positions.values())
+
+    @property
+    def live_exposure_usd(self) -> float:
+        """Total USD exposed in LIVE positions only."""
+        return sum(p.current_value_usd for p in self.positions.values() if not p.is_paper)
+
+    @property
+    def paper_exposure_usd(self) -> float:
+        """Total USD exposed in PAPER positions only."""
+        return sum(p.current_value_usd for p in self.positions.values() if p.is_paper)
 
     @property
     def total_unrealized_pnl_usd(self) -> float:
@@ -183,8 +193,13 @@ class PositionTracker:
 
     @property
     def available_capital_usd(self) -> float:
-        """Available capital for new positions."""
-        return max(0, self.max_exposure_usd - self.total_exposure_usd)
+        """Available capital for new LIVE positions.
+
+        Only counts live positions against capital limit.
+        Paper positions have their own simulated capital and don't
+        affect the real available capital for live trading.
+        """
+        return max(0, self.max_exposure_usd - self.live_exposure_usd)
 
     def can_open_position(self, size_usd: float, market_id: str) -> tuple[bool, str]:
         """Check if we can open a new position."""
@@ -340,6 +355,10 @@ class PositionTracker:
         total_value = sum(p.current_value_usd for p in self.positions.values())
         total_pnl = self.total_unrealized_pnl_usd
 
+        # Separate paper vs live
+        paper_positions = [p for p in self.positions.values() if p.is_paper]
+        live_positions = [p for p in self.positions.values() if not p.is_paper]
+
         # Closed position stats
         total_realized = sum(c.realized_pnl_usd for c in self.closed_positions)
         win_count = sum(1 for c in self.closed_positions if c.realized_pnl_usd > 0)
@@ -347,8 +366,12 @@ class PositionTracker:
 
         return {
             "open_positions": len(self.positions),
+            "paper_positions": len(paper_positions),
+            "live_positions": len(live_positions),
             "total_invested_usd": total_invested,
             "total_value_usd": total_value,
+            "paper_exposure_usd": self.paper_exposure_usd,
+            "live_exposure_usd": self.live_exposure_usd,
             "unrealized_pnl_usd": total_pnl,
             "unrealized_pnl_pct": (total_pnl / total_invested * 100) if total_invested > 0 else 0,
             "available_capital_usd": self.available_capital_usd,
