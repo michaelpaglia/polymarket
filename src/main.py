@@ -249,10 +249,13 @@ class PolymarketBot:
         # Print position summary periodically
         if self.position_tracker.positions:
             summary = self.position_tracker.get_summary()
+            paper_info = f"Paper: {summary['paper_positions']}" if summary['paper_positions'] > 0 else ""
+            live_info = f"Live: {summary['live_positions']}" if summary['live_positions'] > 0 else ""
+            positions_info = " | ".join(filter(None, [paper_info, live_info])) or "0"
             console.print(
-                f"[dim]Positions: {summary['open_positions']} open | "
+                f"[dim]Positions: {positions_info} | "
                 f"P&L: ${summary['unrealized_pnl_usd']:+.2f} | "
-                f"Available: ${summary['available_capital_usd']:.2f}[/dim]"
+                f"Live Available: ${summary['available_capital_usd']:.2f}[/dim]"
             )
 
     async def _scan_twitter_alpha(self) -> None:
@@ -343,11 +346,31 @@ class PolymarketBot:
             if not market:
                 return
 
-            # Determine action based on sentiment
+            # Filter out extreme probabilities - no edge in already-decided markets
+            # This prevents trades like buying NO at 99.8% where there's no edge
+            if market.yes_price >= 0.95:
+                console.print(f"[dim]Skipping: YES already at {market.yes_price:.0%} (no edge for bullish)[/dim]")
+                return
+            if market.yes_price <= 0.05:
+                console.print(f"[dim]Skipping: YES already at {market.yes_price:.0%} (no edge for bearish)[/dim]")
+                return
+
+            # Determine action based on sentiment with price thresholds
+            # (Aligned with signal_model.py direction logic)
             if signal.sentiment == "bullish":
-                action = "BUY_YES"
+                # Only go long if market hasn't priced it in
+                if market.yes_price < 0.75:
+                    action = "BUY_YES"
+                else:
+                    console.print(f"[dim]Skipping bullish: YES at {market.yes_price:.0%} (already priced in)[/dim]")
+                    return
             elif signal.sentiment == "bearish":
-                action = "BUY_NO"
+                # Only go short if market hasn't priced it in
+                if market.yes_price > 0.25:
+                    action = "BUY_NO"
+                else:
+                    console.print(f"[dim]Skipping bearish: YES at {market.yes_price:.0%} (already priced in)[/dim]")
+                    return
             else:
                 action = "HOLD"
 
@@ -595,15 +618,15 @@ class PolymarketBot:
                 "Position opened",
                 market=signal.market_question[:50],
                 direction=signal.direction.value,
-                size=signal.suggested_size_usd,
+                size=trade_size,
                 edge=decision.edge_summary,
             )
 
         if not self.settings.paper_trading:
-            # Live trade
-            await self._execute_trade(signal)
+            # Live trade - use adjusted trade_size, not original suggested_size_usd
+            await self._execute_trade(signal, trade_size)
 
-    async def _execute_trade(self, signal: TradingSignal) -> None:
+    async def _execute_trade(self, signal: TradingSignal, amount_usd: float) -> None:
         """Execute a live trade."""
         if not signal.target_token_id:
             logger.warning("No target token ID for signal")
@@ -612,7 +635,7 @@ class PolymarketBot:
         result = self.polymarket_client.place_market_order(
             token_id=signal.target_token_id,
             side="BUY",
-            amount_usd=signal.suggested_size_usd,
+            amount_usd=amount_usd,
         )
 
         if result.success:
