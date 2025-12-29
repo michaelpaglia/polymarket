@@ -51,3 +51,12 @@ Thumbs.db
 *.pem
 *.key
 credentials.json
+
+# Rust build artifacts
+rust-hft/target/
+
+# Runtime data
+data/
+
+# Claude Code
+.claude/
