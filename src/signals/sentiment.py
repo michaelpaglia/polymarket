@@ -110,15 +110,30 @@ class XSentimentAnalyzer:
     5. Sentiment momentum - Shifting sentiment is predictive
     """
 
+    # Rate limiting: minimum seconds between API calls
+    RATE_LIMIT_DELAY = 60.0  # 60 seconds between calls for 24/7 operation
+
     def __init__(self, api_key: str, proxy_url: str = "") -> None:
         """Initialize the sentiment analyzer."""
         self.api_key = api_key
         self.proxy_url = proxy_url
         self._client: Optional[httpx.AsyncClient] = None
+        self._last_call_time: float = 0.0
         if proxy_url:
             logger.info(f"Initialized X sentiment analyzer with EU proxy")
         else:
             logger.info("Initialized X sentiment analyzer")
+
+    async def _rate_limit(self) -> None:
+        """Enforce rate limiting between API calls."""
+        import time
+        now = time.time()
+        elapsed = now - self._last_call_time
+        if elapsed < self.RATE_LIMIT_DELAY:
+            wait_time = self.RATE_LIMIT_DELAY - elapsed
+            logger.debug(f"Rate limiting: waiting {wait_time:.1f}s before X API call")
+            await asyncio.sleep(wait_time)
+        self._last_call_time = time.time()
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client with optional proxy."""
@@ -151,6 +166,9 @@ class XSentimentAnalyzer:
             return None
 
         try:
+            # Rate limit before API call
+            await self._rate_limit()
+
             client = await self._get_client()
 
             context_text = f"\nRecent news context: {context}" if context else ""
@@ -229,7 +247,7 @@ Return JSON:
         markets: list[tuple[str, str]],  # List of (market_question, context)
     ) -> list[Optional[SentimentAnalysis]]:
         """
-        Analyze sentiment for multiple markets in parallel.
+        Analyze sentiment for multiple markets sequentially with rate limiting.
 
         Args:
             markets: List of (market_question, context) tuples
@@ -237,11 +255,12 @@ Return JSON:
         Returns:
             List of SentimentAnalysis results
         """
-        tasks = [
-            self.analyze_market_sentiment(question, context)
-            for question, context in markets
-        ]
-        return await asyncio.gather(*tasks)
+        # Run sequentially to respect rate limits (not in parallel!)
+        results = []
+        for question, context in markets:
+            result = await self.analyze_market_sentiment(question, context)
+            results.append(result)
+        return results
 
     async def get_crowd_probability(
         self,
@@ -262,6 +281,9 @@ Return JSON:
             return None
 
         try:
+            # Rate limit before API call
+            await self._rate_limit()
+
             client = await self._get_client()
 
             prompt = f"""Search X (Twitter) for discussions about this prediction:
@@ -336,6 +358,9 @@ Return JSON:
             return []
 
         try:
+            # Rate limit before API call
+            await self._rate_limit()
+
             client = await self._get_client()
 
             topics_str = ", ".join(topics)

@@ -23,6 +23,9 @@ class GrokNewsSource(NewsSource):
     Grok has real-time access to X posts and can summarize trending topics.
     """
 
+    # Rate limiting: minimum seconds between API calls
+    RATE_LIMIT_DELAY = 60.0  # 60 seconds between calls for 24/7 operation
+
     def __init__(self, api_key: str) -> None:
         """
         Initialize the Grok news source.
@@ -32,7 +35,20 @@ class GrokNewsSource(NewsSource):
         """
         self._api_key = api_key
         self._client: Optional[httpx.AsyncClient] = None
+        self._last_call_time: float = 0.0
         logger.info("Initialized Grok/X news source")
+
+    async def _rate_limit(self) -> None:
+        """Enforce rate limiting between API calls."""
+        import asyncio
+        import time
+        now = time.time()
+        elapsed = now - self._last_call_time
+        if elapsed < self.RATE_LIMIT_DELAY:
+            wait_time = self.RATE_LIMIT_DELAY - elapsed
+            logger.debug(f"Rate limiting: waiting {wait_time:.1f}s before Grok API call")
+            await asyncio.sleep(wait_time)
+        self._last_call_time = time.time()
 
     @property
     def name(self) -> str:
@@ -81,6 +97,9 @@ class GrokNewsSource(NewsSource):
             return []
 
         try:
+            # Rate limit before API call
+            await self._rate_limit()
+
             client = await self._get_client()
 
             # Build the prompt based on whether there's a query
