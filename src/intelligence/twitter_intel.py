@@ -77,6 +77,9 @@ class TwitterIntelligence:
     4. Identify viral content early
     """
 
+    # Rate limiting: minimum seconds between API calls
+    RATE_LIMIT_DELAY = 60.0  # 60 seconds between calls for 24/7 operation
+
     def __init__(
         self,
         grok_api_key: str,
@@ -85,12 +88,24 @@ class TwitterIntelligence:
         self.api_key = grok_api_key
         self.kg = knowledge_graph or PredictionMarketKnowledgeGraph()
         self._client: Optional[httpx.AsyncClient] = None
+        self._last_call_time: float = 0.0
 
         # Cache for rate limiting and efficiency
         self._influencer_cache: dict[str, InfluencerActivity] = {}
         self._last_scan: dict[str, datetime] = {}
 
         logger.info("Twitter Intelligence initialized")
+
+    async def _rate_limit(self) -> None:
+        """Enforce rate limiting between API calls."""
+        import time
+        now = time.time()
+        elapsed = now - self._last_call_time
+        if elapsed < self.RATE_LIMIT_DELAY:
+            wait_time = self.RATE_LIMIT_DELAY - elapsed
+            logger.debug(f"Rate limiting: waiting {wait_time:.1f}s before X API call")
+            await asyncio.sleep(wait_time)
+        self._last_call_time = time.time()
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -105,28 +120,29 @@ class TwitterIntelligence:
         """
         Comprehensive scan for market-moving Twitter activity.
 
-        Runs multiple detection algorithms in parallel:
+        Runs detection algorithms sequentially with rate limiting:
         1. Breaking news scan
         2. Influencer activity check
         3. Viral content detection
-        4. Sentiment shift detection
 
         Returns prioritized list of signals.
         """
-        tasks = [
-            self._scan_breaking_news(topics or []),
-            self._scan_influencer_activity(),
-            self._scan_viral_content(topics or []),
+        all_signals = []
+
+        # Run sequentially to respect rate limits (not in parallel!)
+        scan_methods = [
+            (self._scan_breaking_news, (topics or [],)),
+            (self._scan_influencer_activity, ()),
+            (self._scan_viral_content, (topics or [],)),
         ]
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        all_signals = []
-        for result in results:
-            if isinstance(result, list):
-                all_signals.extend(result)
-            elif isinstance(result, Exception):
-                logger.warning(f"Scan task failed: {result}")
+        for method, args in scan_methods:
+            try:
+                result = await method(*args)
+                if isinstance(result, list):
+                    all_signals.extend(result)
+            except Exception as e:
+                logger.warning(f"Scan task failed: {e}")
 
         # Sort by urgency and relevance
         urgency_order = {"critical": 0, "high": 1, "normal": 2, "low": 3}
@@ -150,6 +166,9 @@ class TwitterIntelligence:
             return []
 
         try:
+            # Rate limit before API call
+            await self._rate_limit()
+
             client = await self._get_client()
 
             topic_str = ", ".join(topics[:5]) if topics else "politics, crypto, finance, sports"
@@ -230,6 +249,9 @@ Return empty array if no significant breaking news."""
         """
         if not self.api_key:
             return []
+
+        # Rate limit before API call
+        await self._rate_limit()
 
         # Get top influencers from knowledge graph
         top_influencers = sorted(
@@ -320,6 +342,9 @@ Only include posts that could affect prediction markets."""
             return []
 
         try:
+            # Rate limit before API call
+            await self._rate_limit()
+
             client = await self._get_client()
 
             topic_str = ", ".join(topics[:5]) if topics else "trending topics"
@@ -402,6 +427,9 @@ Return JSON:
         query_str = " OR ".join(queries[:5]) if queries else market_question
 
         try:
+            # Rate limit before API call
+            await self._rate_limit()
+
             client = await self._get_client()
 
             prompt = f"""Analyze Twitter sentiment for this prediction market:
