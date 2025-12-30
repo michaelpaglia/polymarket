@@ -230,7 +230,7 @@ class PolymarketBot:
         especially after opening/closing positions.
         """
         try:
-            balance = self.polymarket_client.get_balance()
+            balance = await asyncio.to_thread(self.polymarket_client.get_balance)
             if balance > 0:
                 old_allocation = self.position_tracker.max_exposure_usd
                 new_allocation = balance * self.balance_allocation_pct
