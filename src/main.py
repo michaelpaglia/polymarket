@@ -271,10 +271,15 @@ class PolymarketBot:
         for position in resolved_positions:
             # Market resolved - use last known price or 1.0 if won, 0 if lost
             # Since we can't know outcome, use 0.5 as neutral (balance refresh will show actual)
+            # Market resolved - balance refresh will show actual payout
+            # Use 1.0 if likely won (current_price > 0.5), 0 if likely lost
+            likely_won = position.current_price > 0.5
+            exit_price = 1.0 if likely_won else 0.0
             closed = self.position_tracker.close_position(
                 position.position_id,
-                exit_price=0.5,  # Neutral - actual P&L shown via balance refresh
+                exit_price=exit_price,  # Approximate outcome based on last known price
                 exit_reason=ExitReason.MARKET_CLOSED,
+            )
             )
             if closed:
                 console.print(
