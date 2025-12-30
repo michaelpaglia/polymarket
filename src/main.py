@@ -98,6 +98,8 @@ class PolymarketBot:
         self._alpha_scan_interval = 180  # 3 minutes (more frequent)
         self._last_position_check: Optional[float] = None
         self._position_check_interval = 60  # Check positions every minute
+        self._last_balance_refresh: Optional[float] = None
+        self._balance_refresh_interval = 300  # Refresh balance every 5 minutes
 
     async def start(self) -> None:
         """Start the bot."""
@@ -201,6 +203,14 @@ class PolymarketBot:
                     await self._scan_twitter_alpha()
                     self._last_alpha_scan = current_time
 
+                # Refresh balance (every 5 minutes) - keeps allocation accurate
+                if not self.settings.paper_trading and (
+                    self._last_balance_refresh is None
+                    or current_time - self._last_balance_refresh >= self._balance_refresh_interval
+                ):
+                    await self._refresh_balance()
+                    self._last_balance_refresh = current_time
+
                 # Wait before next iteration
                 await asyncio.sleep(10)
 
@@ -213,6 +223,30 @@ class PolymarketBot:
         # Print summary on exit
         self._print_summary()
 
+    async def _refresh_balance(self) -> None:
+        """Refresh balance from Polymarket and update allocation.
+
+        This keeps the available capital accurate during runtime,
+        especially after opening/closing positions.
+        """
+        try:
+            balance = await asyncio.to_thread(self.polymarket_client.get_balance)
+            if balance > 0:
+                old_allocation = self.position_tracker.max_exposure_usd
+                new_allocation = balance * self.balance_allocation_pct
+                self.position_tracker.max_exposure_usd = new_allocation
+
+                # Only log if there's a meaningful change (> $0.50)
+                if abs(new_allocation - old_allocation) > 0.50:
+                    console.print(
+                        f"[dim]Balance refreshed: ${balance:.2f} → "
+                        f"Allocation: ${new_allocation:.2f} ({self.balance_allocation_pct:.0%})[/dim]"
+                    )
+            else:
+                logger.warning("Balance refresh returned $0")
+        except Exception as e:
+            logger.error("Failed to refresh balance", error=str(e))
+
     async def _check_positions(self) -> None:
         """Check all positions for exit conditions."""
         if not self.position_tracker.positions:
@@ -220,10 +254,38 @@ class PolymarketBot:
 
         # Update prices from current market data
         market_prices = {}
+        active_market_ids = set()
         for market in self.market_indexer.markets:
             market_prices[market.condition_id] = (market.yes_price, market.no_price)
+            active_market_ids.add(market.condition_id)
 
         self.position_tracker.update_prices(market_prices)
+
+        # Check for resolved markets (position's market no longer active)
+        resolved_positions = []
+        for position in list(self.position_tracker.positions.values()):
+            if position.market_id not in active_market_ids:
+                resolved_positions.append(position)
+
+        # Close resolved positions
+        for position in resolved_positions:
+            # Market resolved - use last known price or 1.0 if won, 0 if lost
+            # Since we can't know outcome, use 0.5 as neutral (balance refresh will show actual)
+            # Market resolved - balance refresh will show actual payout
+            # Use 1.0 if likely won (current_price > 0.5), 0 if likely lost
+            likely_won = position.current_price > 0.5
+            exit_price = 1.0 if likely_won else 0.0
+            closed = self.position_tracker.close_position(
+                position.position_id,
+                exit_price=exit_price,  # Approximate outcome based on last known price
+                exit_reason=ExitReason.MARKET_CLOSED,
+            )
+            )
+            if closed:
+                console.print(
+                    f"[cyan]RESOLVED: {position.market_question[:40]}... "
+                    f"Market closed - check balance for actual payout[/cyan]"
+                )
 
         # Check for exits
         exits = self.position_tracker.check_all_exits()
@@ -537,6 +599,21 @@ class PolymarketBot:
             freshness = "RECENT"
         else:
             freshness = "STALE"
+
+        # FILTER: Skip stale news (> 60 minutes old)
+        max_news_age_minutes = 60.0
+        if time_since_news > max_news_age_minutes:
+            console.print(f"[dim]Skipping: News too old ({time_since_news:.0f} min > {max_news_age_minutes:.0f} min max)[/dim]")
+            return
+
+        # FILTER: Skip extreme probability markets (< 5% or > 95%)
+        yes_price = signal.current_yes_price
+        if yes_price < 0.05:
+            console.print(f"[dim]Skipping: Extreme probability - YES at {yes_price:.1%} (< 5% threshold)[/dim]")
+            return
+        if yes_price > 0.95:
+            console.print(f"[dim]Skipping: Extreme probability - YES at {yes_price:.1%} (> 95% threshold)[/dim]")
+            return
 
         # Determine action
         if signal.direction.value == "YES":
