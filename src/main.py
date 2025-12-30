@@ -230,7 +230,8 @@ class PolymarketBot:
         especially after opening/closing positions.
         """
         try:
-            balance = self.polymarket_client.get_balance()
+            # Run sync get_balance() in thread to avoid blocking event loop
+            balance = await asyncio.to_thread(self.polymarket_client.get_balance)
             if balance > 0:
                 old_allocation = self.position_tracker.max_exposure_usd
                 new_allocation = balance * self.balance_allocation_pct
@@ -269,11 +270,13 @@ class PolymarketBot:
 
         # Close resolved positions
         for position in resolved_positions:
-            # Market resolved - use last known price or 1.0 if won, 0 if lost
-            # Since we can't know outcome, use 0.5 as neutral (balance refresh will show actual)
+            # Market resolved - estimate outcome based on last known price
+            # If price was > 0.5, likely resolved YES (1.0), else NO (0.0)
+            likely_won = position.current_price > 0.5
+            exit_price = 1.0 if likely_won else 0.0
             closed = self.position_tracker.close_position(
                 position.position_id,
-                exit_price=0.5,  # Neutral - actual P&L shown via balance refresh
+                exit_price=exit_price,
                 exit_reason=ExitReason.MARKET_CLOSED,
             )
             if closed:
