@@ -280,7 +280,6 @@ class PolymarketBot:
                 exit_price=exit_price,  # Approximate outcome based on last known price
                 exit_reason=ExitReason.MARKET_CLOSED,
             )
-            )
             if closed:
                 console.print(
                     f"[cyan]RESOLVED: {position.market_question[:40]}... "
