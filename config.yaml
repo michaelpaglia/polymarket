@@ -1,5 +1,5 @@
 # Trading mode
-paper_trading: true  # Start with paper trading!
+paper_trading: false  # Live trading mode
 
 # News sources
 news:
@@ -31,6 +31,7 @@ risk:
   max_portfolio_exposure_usd: 500
   max_daily_trades: 20
   stop_loss_pct: 0.25
+  balance_allocation_pct: 0.5  # 50% for Python module, 50% for Rust module
 
 # Logging
 logging:
