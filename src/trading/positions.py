@@ -195,11 +195,16 @@ class PositionTracker:
     def available_capital_usd(self) -> float:
         """Available capital for new LIVE positions.
 
-        Only counts live positions against capital limit.
-        Paper positions have their own simulated capital and don't
-        affect the real available capital for live trading.
+        Returns the max_exposure_usd directly, which is set to a percentage
+        of the actual USDC balance from Polymarket. This represents the
+        capital available for NEW trades.
+
+        Note: We don't subtract existing live positions because:
+        1. They were funded from previous capital/sessions
+        2. The USDC balance already reflects money not in positions
+        3. max_exposure_usd is recalculated from actual balance at startup
         """
-        return max(0, self.max_exposure_usd - self.live_exposure_usd)
+        return self.max_exposure_usd
 
     def can_open_position(self, size_usd: float, market_id: str) -> tuple[bool, str]:
         """Check if we can open a new position."""
