@@ -204,7 +204,8 @@ class PositionTracker:
         2. The USDC balance already reflects money not in positions
         3. max_exposure_usd is recalculated from actual balance at startup
         """
-        return self.max_exposure_usd
+        capital_used = sum(p.size_usd for p in self.positions.values() if not p.is_paper)
+        return max(0, self.max_exposure_usd - capital_used)
 
     def can_open_position(self, size_usd: float, market_id: str) -> tuple[bool, str]:
         """Check if we can open a new position."""
