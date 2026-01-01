@@ -54,6 +54,9 @@ def main():
     # Get positions from API
     url = f"https://data-api.polymarket.com/positions?user={wallet_address.lower()}"
     resp = httpx.get(url, timeout=30)
+    if resp.status_code != 200:
+        print(f"ERROR: API request failed with status {resp.status_code}")
+        return
     positions = resp.json()
 
     # Find redeemable positions with value > 0
@@ -96,7 +99,7 @@ def main():
             txn = ctf.functions.redeemPositions(
                 w3.to_checksum_address(USDC_ADDRESS),
                 bytes.fromhex("00" * 32),  # parentCollectionId = 0x0
-                bytes.fromhex(condition_id[2:]),  # Remove 0x prefix
+                bytes.fromhex(condition_id[2:] if condition_id.startswith('0x') else condition_id),
                 index_sets
             ).build_transaction({
                 'from': wallet_address,
