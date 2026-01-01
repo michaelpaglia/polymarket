@@ -90,11 +90,33 @@ class TwitterIntelligence:
         self._client: Optional[httpx.AsyncClient] = None
         self._last_call_time: float = 0.0
 
+        # Circuit breaker for API exhaustion
+        self._circuit_open = False
+        self._circuit_open_until: Optional[datetime] = None
+
         # Cache for rate limiting and efficiency
         self._influencer_cache: dict[str, InfluencerActivity] = {}
         self._last_scan: dict[str, datetime] = {}
 
         logger.info("Twitter Intelligence initialized")
+
+    def is_circuit_open(self) -> bool:
+        """Check if circuit breaker is open (API exhausted)."""
+        if not self._circuit_open:
+            return False
+        # Check if cooldown has passed (reset after 1 hour)
+        if self._circuit_open_until and datetime.now(timezone.utc) > self._circuit_open_until:
+            self._circuit_open = False
+            self._circuit_open_until = None
+            logger.info("Twitter API circuit breaker reset")
+            return False
+        return True
+
+    def _trip_circuit_breaker(self) -> None:
+        """Trip the circuit breaker after API exhaustion."""
+        self._circuit_open = True
+        self._circuit_open_until = datetime.now(timezone.utc) + timedelta(hours=1)
+        logger.warning("Twitter API circuit breaker tripped - pausing for 1 hour")
 
     async def _rate_limit(self) -> None:
         """Enforce rate limiting between API calls."""
@@ -120,29 +142,23 @@ class TwitterIntelligence:
         """
         Comprehensive scan for market-moving Twitter activity.
 
-        Runs detection algorithms sequentially with rate limiting:
-        1. Breaking news scan
-        2. Influencer activity check
-        3. Viral content detection
+        Uses a SINGLE combined API call to check:
+        1. Breaking news
+        2. Influencer activity
+        3. Viral content
 
         Returns prioritized list of signals.
         """
-        all_signals = []
+        # Check circuit breaker first
+        if self.is_circuit_open():
+            logger.debug("Twitter API circuit breaker is open, skipping scan")
+            return []
 
-        # Run sequentially to respect rate limits (not in parallel!)
-        scan_methods = [
-            (self._scan_breaking_news, (topics or [],)),
-            (self._scan_influencer_activity, ()),
-            (self._scan_viral_content, (topics or [],)),
-        ]
+        if not self.api_key:
+            return []
 
-        for method, args in scan_methods:
-            try:
-                result = await method(*args)
-                if isinstance(result, list):
-                    all_signals.extend(result)
-            except Exception as e:
-                logger.warning(f"Scan task failed: {e}")
+        # Use combined scan (single API call instead of 3)
+        all_signals = await self._scan_combined(topics or [])
 
         # Sort by urgency and relevance
         urgency_order = {"critical": 0, "high": 1, "normal": 2, "low": 3}
@@ -151,6 +167,160 @@ class TwitterIntelligence:
         )
 
         return all_signals
+
+    async def _scan_combined(self, topics: list[str]) -> list[TweetSignal]:
+        """
+        Combined scan - single API call for all signal types.
+
+        This replaces the 3 separate scans to reduce API costs by ~66%.
+        """
+        try:
+            await self._rate_limit()
+            client = await self._get_client()
+
+            topic_str = ", ".join(topics[:10]) if topics else "politics, crypto, finance, sports, elections"
+
+            # Get top influencers for the prompt
+            top_influencers = sorted(
+                self.kg.influencers.values(),
+                key=lambda x: x.influence_score,
+                reverse=True,
+            )[:10]
+            influencer_handles = [inf.handle for inf in top_influencers] if top_influencers else []
+            influencer_str = ", ".join(influencer_handles) if influencer_handles else "major news accounts, political figures, crypto influencers"
+
+            prompt = f"""Scan X/Twitter for market-moving activity in the last 60 minutes. Topics: {topic_str}
+
+Check THREE categories and return results in a SINGLE JSON response:
+
+1. BREAKING NEWS: Posts with "BREAKING", "JUST IN", "DEVELOPING" from credible sources (@AP, @Reuters, @WSJ, @Bloomberg, verified accounts)
+
+2. INFLUENCER ACTIVITY: Recent posts from key accounts like {influencer_str} that could move prediction markets
+
+3. VIRAL CONTENT: Posts going viral (high engagement velocity) about the topics above
+
+Return JSON:
+{{
+    "breaking_news": [
+        {{"handle": "@source", "summary": "what happened", "minutes_ago": 10, "credibility": "high/medium/low", "market_impact": "description"}}
+    ],
+    "influencer_activity": [
+        {{"handle": "@account", "post_summary": "what they said", "topic": "category", "sentiment": "bullish/bearish/neutral", "hours_ago": 0.5, "market_relevance": "high/medium/low"}}
+    ],
+    "viral_content": [
+        {{"handle": "@source", "content_summary": "what's going viral", "topic": "category", "engagement_level": "viral/high/medium", "sentiment": "positive/negative/mixed", "hours_old": 1.5}}
+    ]
+}}
+
+Return empty arrays for categories with no significant activity. Only include genuinely market-relevant items."""
+
+            response = await client.post(
+                GROK_API_URL,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self.api_key}",
+                },
+                json={
+                    "model": "grok-3-fast-latest",
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": "You are a real-time market intelligence scanner with X access. "
+                            "Find breaking news, influencer posts, and viral content that could affect prediction markets. "
+                            "Return valid JSON. Be selective - only report genuinely significant items.",
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    "temperature": 0.1,
+                },
+            )
+
+            # Check for rate limit / exhaustion
+            if response.status_code == 429:
+                error_text = response.text
+                if "exhausted" in error_text.lower() or "limit" in error_text.lower():
+                    self._trip_circuit_breaker()
+                logger.error("Grok API rate limited", status=429, response=error_text[:200])
+                return []
+
+            if response.status_code != 200:
+                logger.error("Grok API error", status=response.status_code)
+                return []
+
+            data = response.json()
+            content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+            # Parse all three categories from single response
+            return self._parse_combined_response(content)
+
+        except Exception as e:
+            logger.error(f"Combined scan failed: {e}")
+            return []
+
+    def _parse_combined_response(self, content: str) -> list[TweetSignal]:
+        """Parse the combined scan response into signals."""
+        signals = []
+        try:
+            data = self._parse_json_response(content)
+
+            # Parse breaking news
+            for item in data.get("breaking_news", []):
+                urgency = "critical" if item.get("minutes_ago", 60) < 15 else "high"
+                signals.append(
+                    TweetSignal(
+                        signal_type="breaking_news",
+                        source_handle=item.get("handle", ""),
+                        content_summary=item.get("summary", ""),
+                        timestamp=datetime.now(timezone.utc),
+                        relevance_score=0.9 if item.get("credibility") == "high" else 0.7,
+                        sentiment="neutral",
+                        sentiment_score=0.5,
+                        urgency=urgency,
+                    )
+                )
+
+            # Parse influencer activity
+            for item in data.get("influencer_activity", []):
+                influencer = self.kg.get_influencer(item.get("handle", ""))
+                influence_score = influencer.influence_score if influencer else 0.5
+                sentiment_str = item.get("sentiment", "neutral")
+                sentiment_score = {"bullish": 0.8, "bearish": 0.2, "neutral": 0.5}.get(sentiment_str, 0.5)
+                urgency = "high" if item.get("market_relevance") == "high" else "normal"
+                signals.append(
+                    TweetSignal(
+                        signal_type="influencer_post",
+                        source_handle=item.get("handle", ""),
+                        content_summary=item.get("post_summary", ""),
+                        timestamp=datetime.now(timezone.utc),
+                        relevance_score=influence_score,
+                        sentiment=sentiment_str,
+                        sentiment_score=sentiment_score,
+                        urgency=urgency,
+                    )
+                )
+
+            # Parse viral content
+            for item in data.get("viral_content", []):
+                engagement = item.get("engagement_level", "medium")
+                relevance = {"viral": 0.95, "high": 0.8, "medium": 0.6}.get(engagement, 0.6)
+                signals.append(
+                    TweetSignal(
+                        signal_type="viral_thread",
+                        source_handle=item.get("handle", ""),
+                        content_summary=item.get("content_summary", ""),
+                        timestamp=datetime.now(timezone.utc),
+                        relevance_score=relevance,
+                        sentiment=item.get("sentiment", "neutral"),
+                        sentiment_score=0.5,
+                        urgency="high" if engagement == "viral" else "normal",
+                        virality_potential=relevance,
+                    )
+                )
+
+        except Exception as e:
+            logger.warning(f"Failed to parse combined response: {e}")
+
+        return signals
 
     async def _scan_breaking_news(self, topics: list[str]) -> list[TweetSignal]:
         """
