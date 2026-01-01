@@ -86,12 +86,11 @@ class PolymarketBot:
         if settings.polymarket.private_key:
             self.redeemer = PositionRedeemer(settings.polymarket.private_key)
 
-        # Position tracker - Python module gets 50% of balance allocation
-        # (Rust module will use the other 50%)
+        # Position tracker - balance allocation is configurable via --allocation flag
         max_exposure = settings.risk.max_portfolio_exposure_usd
         self.position_tracker = PositionTracker(
             max_positions=50,  # Can hold up to 50 positions
-            max_exposure_usd=max_exposure,  # Will be updated with 50% of balance
+            max_exposure_usd=max_exposure,  # Will be updated with balance * allocation_pct
         )
         self.balance_allocation_pct = settings.risk.balance_allocation_pct
 
@@ -127,16 +126,14 @@ class PolymarketBot:
             if self.polymarket_client.authenticate():
                 console.print("[green]Authentication: OK[/green]")
 
-                # Show balance and set 50% allocation for live trading
+                # Show balance and set allocation for live trading
                 if not self.settings.paper_trading:
                     balance = self.polymarket_client.get_balance()
                     if balance > 0:
-                        # Python module gets 50% of balance (Rust gets the other 50%)
                         python_allocation = balance * self.balance_allocation_pct
                         self.position_tracker.max_exposure_usd = python_allocation
                         console.print(f"[green]USDC Balance: ${balance:.2f}[/green]")
-                        console.print(f"[cyan]Python module allocation: ${python_allocation:.2f} ({self.balance_allocation_pct:.0%})[/cyan]")
-                        console.print(f"[cyan]Rust module reserved: ${balance - python_allocation:.2f}[/cyan]")
+                        console.print(f"[cyan]Trading allocation: ${python_allocation:.2f} ({self.balance_allocation_pct:.0%})[/cyan]")
                     else:
                         console.print("[red]WARNING: No USDC balance detected![/red]")
                         console.print("[yellow]You need USDC on Polygon to trade.[/yellow]")
@@ -873,7 +870,7 @@ def main() -> None:
         "--allocation",
         type=float,
         default=None,
-        help="Balance allocation percentage for Python module (0.0-1.0). Default: 0.5 (50%%)",
+        help="Balance allocation percentage (0.0-1.0). Default: 1.0 (100%%)",
     )
     args = parser.parse_args()
 
