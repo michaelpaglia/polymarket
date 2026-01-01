@@ -70,11 +70,11 @@ class RiskSettings(BaseSettings):
     """Risk management settings."""
 
     max_position_per_market_usd: float = 100.0
-    max_portfolio_exposure_usd: float = 500.0  # Will be overridden to 50% of balance
+    max_portfolio_exposure_usd: float = 500.0  # Will be overridden by balance * allocation
     max_daily_trades: int = 20
     stop_loss_pct: float = 0.25
-    # Python module gets 50% of balance (Rust module gets the other 50%)
-    balance_allocation_pct: float = 0.50
+    # Balance allocation for Python module (use --allocation flag to override)
+    balance_allocation_pct: float = 1.0  # 100% default
 
 
 class ProxySettings(BaseSettings):
