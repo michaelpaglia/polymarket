@@ -19,7 +19,7 @@ from src.signals.analyzer import SignalAnalyzer
 from src.signals.models import TradingSignal, TradeDecision
 from src.trading.client import PolymarketClient
 from src.trading.positions import PositionTracker, PositionSide, ExitReason
-from src.trading.redeem import PositionRedeemer
+# from src.trading.redeem import PositionRedeemer
 from src.utils.logging import get_logger, setup_logging
 from src.intelligence.dynamic_graph import DynamicKnowledgeGraph
 from src.intelligence.twitter_intel import TwitterIntelligence, TweetSignal
