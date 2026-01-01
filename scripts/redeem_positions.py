@@ -54,6 +54,9 @@ def main():
     # Get positions from API
     url = f"https://data-api.polymarket.com/positions?user={wallet_address.lower()}"
     resp = httpx.get(url, timeout=30)
+    if resp.status_code != 200:
+        print(f"ERROR: API request failed with status {resp.status_code}")
+        return
     positions = resp.json()
 
     # Find redeemable positions with value > 0
