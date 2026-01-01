@@ -1,7 +1,7 @@
 """Grok/X (Twitter) news source using xAI API."""
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 import httpx
@@ -36,7 +36,27 @@ class GrokNewsSource(NewsSource):
         self._api_key = api_key
         self._client: Optional[httpx.AsyncClient] = None
         self._last_call_time: float = 0.0
+        # Circuit breaker for API exhaustion
+        self._circuit_open = False
+        self._circuit_open_until: Optional[datetime] = None
         logger.info("Initialized Grok/X news source")
+
+    def is_circuit_open(self) -> bool:
+        """Check if circuit breaker is open (API exhausted)."""
+        if not self._circuit_open:
+            return False
+        if self._circuit_open_until and datetime.now(timezone.utc) > self._circuit_open_until:
+            self._circuit_open = False
+            self._circuit_open_until = None
+            logger.info("Grok news circuit breaker reset")
+            return False
+        return True
+
+    def _trip_circuit_breaker(self) -> None:
+        """Trip the circuit breaker after API exhaustion."""
+        self._circuit_open = True
+        self._circuit_open_until = datetime.now(timezone.utc) + timedelta(hours=1)
+        logger.warning("Grok news circuit breaker tripped - pausing for 1 hour")
 
     async def _rate_limit(self) -> None:
         """Enforce rate limiting between API calls."""
@@ -94,6 +114,11 @@ class GrokNewsSource(NewsSource):
         """
         if not self.is_configured():
             logger.warning("Grok not configured, skipping fetch")
+            return []
+
+        # Check circuit breaker
+        if self.is_circuit_open():
+            logger.debug("Grok news circuit breaker is open, skipping fetch")
             return []
 
         try:
@@ -154,6 +179,13 @@ Return up to {min(max_results, 10)} of the most market-relevant news items. Only
                     "temperature": 0.1,
                 },
             )
+
+            if response.status_code == 429:
+                error_text = response.text
+                if "exhausted" in error_text.lower() or "limit" in error_text.lower():
+                    self._trip_circuit_breaker()
+                logger.error("Grok API rate limited", status=429, response=error_text[:200])
+                return []
 
             if response.status_code != 200:
                 logger.error(
