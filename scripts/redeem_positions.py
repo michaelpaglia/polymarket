@@ -96,7 +96,7 @@ def main():
             txn = ctf.functions.redeemPositions(
                 w3.to_checksum_address(USDC_ADDRESS),
                 bytes.fromhex("00" * 32),  # parentCollectionId = 0x0
-                bytes.fromhex(condition_id[2:]),  # Remove 0x prefix
+                bytes.fromhex(condition_id[2:] if condition_id.startswith('0x') else condition_id),
                 index_sets
             ).build_transaction({
                 'from': wallet_address,
