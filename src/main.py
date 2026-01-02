@@ -817,6 +817,12 @@ def main() -> None:
         action="store_true",
         help="Run interactive setup wizard to configure API keys",
     )
+    parser.add_argument(
+        "--allocation",
+        type=float,
+        default=None,
+        help="Balance allocation percentage (0.0-1.0). Default: 1.0 (100%%)",
+    )
     args = parser.parse_args()
 
     # Run setup wizard if requested
@@ -844,6 +850,15 @@ def main() -> None:
         time.sleep(3)  # Give user time to cancel
     elif args.paper:
         settings.paper_trading = True
+
+    # Override allocation if specified
+    if args.allocation is not None:
+        if 0.0 <= args.allocation <= 1.0:
+            settings.risk.balance_allocation_pct = args.allocation
+            console.print(f"[cyan]Balance allocation set to {args.allocation:.0%}[/cyan]")
+        else:
+            console.print("[red]ERROR: --allocation must be between 0.0 and 1.0[/red]")
+            sys.exit(1)
 
     # Setup logging
     setup_logging(
