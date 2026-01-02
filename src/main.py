@@ -19,6 +19,7 @@ from src.signals.analyzer import SignalAnalyzer
 from src.signals.models import TradingSignal, TradeDecision
 from src.trading.client import PolymarketClient
 from src.trading.positions import PositionTracker, PositionSide, ExitReason
+from src.trading.redeem import PositionRedeemer
 from src.utils.logging import get_logger, setup_logging
 from src.intelligence.dynamic_graph import DynamicKnowledgeGraph
 from src.intelligence.twitter_intel import TwitterIntelligence, TweetSignal
@@ -80,12 +81,16 @@ class PolymarketBot:
                 knowledge_graph=None,  # Will use dynamic topics
             )
 
-        # Position tracker - Python module gets 50% of balance allocation
-        # (Rust module will use the other 50%)
+        # Position redeemer for auto-claiming resolved positions
+        self.redeemer: Optional[PositionRedeemer] = None
+        if settings.polymarket.private_key:
+            self.redeemer = PositionRedeemer(settings.polymarket.private_key)
+
+        # Position tracker - balance allocation is configurable via --allocation flag
         max_exposure = settings.risk.max_portfolio_exposure_usd
         self.position_tracker = PositionTracker(
             max_positions=50,  # Can hold up to 50 positions
-            max_exposure_usd=max_exposure,  # Will be updated with 50% of balance
+            max_exposure_usd=max_exposure,  # Will be updated with balance * allocation_pct
         )
         self.balance_allocation_pct = settings.risk.balance_allocation_pct
 
@@ -95,7 +100,7 @@ class PolymarketBot:
 
         # Scan intervals (seconds)
         self._last_alpha_scan: Optional[float] = None
-        self._alpha_scan_interval = 180  # 3 minutes (more frequent)
+        self._alpha_scan_interval = 3600  # 1 hour (reduced from 3 min to save API costs)
         self._last_position_check: Optional[float] = None
         self._position_check_interval = 60  # Check positions every minute
         self._last_balance_refresh: Optional[float] = None
@@ -121,16 +126,14 @@ class PolymarketBot:
             if self.polymarket_client.authenticate():
                 console.print("[green]Authentication: OK[/green]")
 
-                # Show balance and set 50% allocation for live trading
+                # Show balance and set allocation for live trading
                 if not self.settings.paper_trading:
                     balance = self.polymarket_client.get_balance()
                     if balance > 0:
-                        # Python module gets 50% of balance (Rust gets the other 50%)
                         python_allocation = balance * self.balance_allocation_pct
                         self.position_tracker.max_exposure_usd = python_allocation
                         console.print(f"[green]USDC Balance: ${balance:.2f}[/green]")
-                        console.print(f"[cyan]Python module allocation: ${python_allocation:.2f} ({self.balance_allocation_pct:.0%})[/cyan]")
-                        console.print(f"[cyan]Rust module reserved: ${balance - python_allocation:.2f}[/cyan]")
+                        console.print(f"[cyan]Trading allocation: ${python_allocation:.2f} ({self.balance_allocation_pct:.0%})[/cyan]")
                     else:
                         console.print("[red]WARNING: No USDC balance detected![/red]")
                         console.print("[yellow]You need USDC on Polygon to trade.[/yellow]")
@@ -229,6 +232,9 @@ class PolymarketBot:
         This keeps the available capital accurate during runtime,
         especially after opening/closing positions.
         """
+        # First, try to redeem any resolved positions
+        await self._check_and_redeem_positions()
+
         try:
             balance = await asyncio.to_thread(self.polymarket_client.get_balance)
             if balance > 0:
@@ -246,6 +252,21 @@ class PolymarketBot:
                 logger.warning("Balance refresh returned $0")
         except Exception as e:
             logger.error("Failed to refresh balance", error=str(e))
+
+    async def _check_and_redeem_positions(self) -> None:
+        """Check for and auto-redeem any resolved positions."""
+        if not self.redeemer or self.settings.paper_trading:
+            return
+
+        try:
+            # Run redemption in thread to avoid blocking
+            count, total = await asyncio.to_thread(self.redeemer.redeem_all)
+            if count > 0:
+                console.print(
+                    f"[green]AUTO-REDEEMED: {count} position(s) for ${total:.2f}[/green]"
+                )
+        except Exception as e:
+            logger.error("Auto-redemption failed", error=str(e))
 
     async def _check_positions(self) -> None:
         """Check all positions for exit conditions."""
@@ -310,14 +331,28 @@ class PolymarketBot:
         # Print position summary periodically
         if self.position_tracker.positions:
             summary = self.position_tracker.get_summary()
-            paper_info = f"Paper: {summary['paper_positions']}" if summary['paper_positions'] > 0 else ""
-            live_info = f"Live: {summary['live_positions']}" if summary['live_positions'] > 0 else ""
-            positions_info = " | ".join(filter(None, [paper_info, live_info])) or "0"
-            console.print(
-                f"[dim]Positions: {positions_info} | "
-                f"P&L: ${summary['unrealized_pnl_usd']:+.2f} | "
-                f"Live Available: ${summary['available_capital_usd']:.2f}[/dim]"
-            )
+            # In live mode, only show live positions
+            if not self.settings.paper_trading:
+                if summary['live_positions'] > 0:
+                    console.print(
+                        f"[dim]Live Positions: {summary['live_positions']} | "
+                        f"P&L: ${summary['live_unrealized_pnl_usd']:+.2f} | "
+                        f"Available: ${summary['available_capital_usd']:.2f}[/dim]"
+                    )
+                else:
+                    console.print(
+                        f"[dim]No live positions | Available: ${summary['available_capital_usd']:.2f}[/dim]"
+                    )
+            else:
+                # Paper mode - show all
+                paper_info = f"Paper: {summary['paper_positions']}" if summary['paper_positions'] > 0 else ""
+                live_info = f"Live: {summary['live_positions']}" if summary['live_positions'] > 0 else ""
+                positions_info = " | ".join(filter(None, [paper_info, live_info])) or "0"
+                console.print(
+                    f"[dim]Positions: {positions_info} | "
+                    f"P&L: ${summary['unrealized_pnl_usd']:+.2f} | "
+                    f"Available: ${summary['available_capital_usd']:.2f}[/dim]"
+                )
 
     async def _scan_twitter_alpha(self) -> None:
         """
@@ -330,6 +365,13 @@ class PolymarketBot:
         """
         if not self.twitter_intel:
             return
+
+        # Skip scanning if no capital available (waste of API costs)
+        if not self.settings.paper_trading:
+            available = self.position_tracker.available_capital_usd
+            if available < 5.0:  # Minimum trade size
+                console.print("[dim]Skipping X scan: No available capital[/dim]")
+                return
 
         console.print("[dim]Scanning X for alpha...[/dim]")
 
@@ -533,6 +575,13 @@ class PolymarketBot:
 
     async def _process_news(self) -> None:
         """Fetch and process news articles."""
+        # Skip if no capital available in live mode (waste of API costs)
+        if not self.settings.paper_trading:
+            available = self.position_tracker.available_capital_usd
+            if available < 5.0:  # Minimum trade size
+                console.print("[dim]Skipping news fetch: No available capital[/dim]")
+                return
+
         console.print("[dim]Fetching news...[/dim]")
 
         articles = await self.news_aggregator.fetch_all()
@@ -817,6 +866,12 @@ def main() -> None:
         action="store_true",
         help="Run interactive setup wizard to configure API keys",
     )
+    parser.add_argument(
+        "--allocation",
+        type=float,
+        default=None,
+        help="Balance allocation percentage (0.0-1.0). Default: 1.0 (100%%)",
+    )
     args = parser.parse_args()
 
     # Run setup wizard if requested
@@ -844,6 +899,15 @@ def main() -> None:
         time.sleep(3)  # Give user time to cancel
     elif args.paper:
         settings.paper_trading = True
+
+    # Override allocation if specified
+    if args.allocation is not None:
+        if 0.0 <= args.allocation <= 1.0:
+            settings.risk.balance_allocation_pct = args.allocation
+            console.print(f"[cyan]Balance allocation set to {args.allocation:.0%}[/cyan]")
+        else:
+            console.print("[red]ERROR: --allocation must be between 0.0 and 1.0[/red]")
+            sys.exit(1)
 
     # Setup logging
     setup_logging(

@@ -366,6 +366,9 @@ class PositionTracker:
         paper_positions = [p for p in self.positions.values() if p.is_paper]
         live_positions = [p for p in self.positions.values() if not p.is_paper]
 
+        # Live-only P&L
+        live_unrealized_pnl = sum(p.unrealized_pnl_usd for p in live_positions)
+
         # Closed position stats
         total_realized = sum(c.realized_pnl_usd for c in self.closed_positions)
         win_count = sum(1 for c in self.closed_positions if c.realized_pnl_usd > 0)
@@ -380,6 +383,7 @@ class PositionTracker:
             "paper_exposure_usd": self.paper_exposure_usd,
             "live_exposure_usd": self.live_exposure_usd,
             "unrealized_pnl_usd": total_pnl,
+            "live_unrealized_pnl_usd": live_unrealized_pnl,
             "unrealized_pnl_pct": (total_pnl / total_invested * 100) if total_invested > 0 else 0,
             "available_capital_usd": self.available_capital_usd,
             "closed_trades": len(self.closed_positions),
