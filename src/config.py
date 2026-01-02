@@ -69,7 +69,8 @@ class SignalSettings(BaseSettings):
 class RiskSettings(BaseSettings):
     """Risk management settings."""
 
-    max_position_per_market_usd: float = 100.0
+    max_position_per_market_usd: float = 25.0  # Max $25 per trade
+    max_position_pct: float = 0.25  # Max 25% of capital per trade
     max_portfolio_exposure_usd: float = 500.0  # Will be overridden by balance * allocation
     max_daily_trades: int = 20
     stop_loss_pct: float = 0.25

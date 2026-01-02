@@ -480,10 +480,13 @@ class PolymarketBot:
             if action == "HOLD":
                 return
 
-            # Calculate position size based on confidence
+            # Calculate position size based on confidence, capped by both USD limit and % of capital
+            available = self.position_tracker.available_capital_usd
+            max_by_pct = available * self.settings.risk.max_position_pct
             position_size = min(
                 self.settings.risk.max_position_per_market_usd * signal.relevance_score,
                 self.settings.risk.max_position_per_market_usd,
+                max_by_pct,  # Cap at max % of available capital
             )
 
             # Check if we can open this position, adjust size if needed
@@ -672,7 +675,11 @@ class PolymarketBot:
             action = "HOLD"
 
         # Check if we can open this position, adjust size if needed
-        trade_size = signal.suggested_size_usd
+        # Cap at max % of available capital
+        available = self.position_tracker.available_capital_usd
+        max_by_pct = available * self.settings.risk.max_position_pct
+        trade_size = min(signal.suggested_size_usd, max_by_pct)
+
         can_open, reason = self.position_tracker.can_open_position(
             trade_size, signal.market_id
         )
