@@ -15,7 +15,7 @@ news:
 markets:
   refresh_interval_minutes: 15
   min_liquidity_usd: 500  # Minimum liquidity to filter low-volume markets
-  max_days_to_resolution: 7  # Only markets ending within 1 week
+  max_days_to_resolution: 3  # Only markets ending within 3 days
   top_k_matches: 5
 
 # Signal generation
