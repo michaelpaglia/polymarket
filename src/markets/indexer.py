@@ -166,10 +166,11 @@ class MarketIndexer:
         if market.liquidity < self.settings.min_liquidity_usd:
             return False
 
-        # Must resolve within max days
-        if market.days_to_resolution is not None:
-            if market.days_to_resolution > self.settings.max_days_to_resolution:
-                return False
+        # Must resolve within max days (reject markets without valid end date)
+        if market.days_to_resolution is None:
+            return False
+        if market.days_to_resolution > self.settings.max_days_to_resolution:
+            return False
 
         # Must have valid outcomes
         if not market.outcomes:
