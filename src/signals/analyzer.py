@@ -141,19 +141,20 @@ class SignalAnalyzer:
             # Generate signals using LLM (news-based)
             signals = await self._generate_signals(article, matches)
 
-            # Enhance signals with X sentiment edge detection (parallel)
-            if self._sentiment_analyzer:
+            # PRE-FILTER: Only keep signals above threshold BEFORE expensive Grok calls
+            # This saves ~80% on API costs by not analyzing weak signals
+            signals = [
+                s for s in signals
+                if s.confidence >= self.signal_settings.confidence_threshold
+            ]
+
+            # Enhance ONLY promising signals with X sentiment (expensive Grok API)
+            if self._sentiment_analyzer and signals:
                 signals = await self._enhance_with_sentiment(signals, matches, article)
 
             # Calculate position sizes (scaled by edge size)
             for signal in signals:
                 signal.suggested_size_usd = self._calculate_position_size(signal)
-
-            # Filter by confidence threshold
-            signals = [
-                s for s in signals
-                if s.confidence >= self.signal_settings.confidence_threshold
-            ]
 
             analysis_time = (time.time() - start_time) * 1000
 
