@@ -100,7 +100,7 @@ class PolymarketBot:
 
         # Scan intervals (seconds)
         self._last_alpha_scan: Optional[float] = None
-        self._alpha_scan_interval = 3600  # 1 hour (reduced from 3 min to save API costs)
+        self._alpha_scan_interval = 14400  # 4 hours (optimized for cost - still 6 scans/day)
         self._last_position_check: Optional[float] = None
         self._position_check_interval = 60  # Check positions every minute
         self._last_balance_refresh: Optional[float] = None

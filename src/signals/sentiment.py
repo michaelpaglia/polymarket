@@ -214,7 +214,7 @@ Return JSON:
                     "Authorization": f"Bearer {self.api_key}",
                 },
                 json={
-                    "model": "grok-3-fast-latest",
+                    "model": "grok-4-1-fast-non-reasoning",
                     "messages": [
                         {
                             "role": "system",
@@ -307,7 +307,7 @@ Return JSON:
                     "Authorization": f"Bearer {self.api_key}",
                 },
                 json={
-                    "model": "grok-3-fast-latest",
+                    "model": "grok-4-1-fast-non-reasoning",
                     "messages": [
                         {
                             "role": "system",
@@ -396,7 +396,7 @@ Return empty array if no breaking news found."""
                     "Authorization": f"Bearer {self.api_key}",
                 },
                 json={
-                    "model": "grok-3-fast-latest",
+                    "model": "grok-4-1-fast-non-reasoning",
                     "messages": [
                         {
                             "role": "system",
