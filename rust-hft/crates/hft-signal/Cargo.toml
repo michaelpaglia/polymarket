@@ -1,0 +1,30 @@
+[package]
+name = "hft-signal"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Signal detection engine for crypto latency exploitation"
+
+[dependencies]
+# Internal
+hft-core = { workspace = true }
+hft-binance = { path = "../hft-binance" }
+
+# Concurrency
+parking_lot = { workspace = true }
+dashmap = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+
+# Utilities
+rust_decimal = { workspace = true }
+rust_decimal_macros = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }

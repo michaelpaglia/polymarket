@@ -1910,6 +1910,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "hft-binance"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "base64 0.22.1",
+ "chrono",
+ "futures-util",
+ "native-tls",
+ "parking_lot",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "hft-core"
 version = "0.1.0"
 dependencies = [
@@ -1924,6 +1944,24 @@ dependencies = [
  "thiserror 2.0.17",
  "tracing",
  "uuid 1.19.0",
+]
+
+[[package]]
+name = "hft-discovery"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "dashmap",
+ "hft-core",
+ "parking_lot",
+ "regex",
+ "reqwest",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -1984,19 +2022,63 @@ name = "hft-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "config",
  "dotenvy",
+ "futures",
  "hft-api",
+ "hft-binance",
  "hft-core",
+ "hft-discovery",
  "hft-executor",
  "hft-metrics",
  "hft-risk",
+ "hft-signal",
+ "hft-simulator",
  "hft-websocket",
  "rust_decimal",
+ "rust_decimal_macros",
  "serde",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid 1.19.0",
+]
+
+[[package]]
+name = "hft-signal"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "dashmap",
+ "hft-binance",
+ "hft-core",
+ "parking_lot",
+ "rust_decimal",
+ "rust_decimal_macros",
+ "serde",
+ "thiserror 2.0.17",
+ "tokio",
+ "tracing",
+ "uuid 1.19.0",
+]
+
+[[package]]
+name = "hft-simulator"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "dashmap",
+ "hft-core",
+ "parking_lot",
+ "rand 0.8.5",
+ "rust_decimal",
+ "rust_decimal_macros",
+ "serde",
+ "thiserror 2.0.17",
+ "tokio",
+ "tracing",
+ "uuid 1.19.0",
 ]
 
 [[package]]
