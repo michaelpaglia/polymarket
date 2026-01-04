@@ -193,7 +193,7 @@ impl KrakenClient {
     fn handle_message(&self, text: &str) {
         let received_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_nanos() as u64;
 
         // Kraken sends different message types
