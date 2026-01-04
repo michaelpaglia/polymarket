@@ -368,19 +368,21 @@ impl CryptoLatencyApp {
                 self.simulator.check_exits(
                     |trade| {
                         // Get current price from orderbook
-                        let books = futures::executor::block_on(orderbooks.read());
-                        let ob = books.get(&trade.market_id.0)?;
-                        match trade.direction {
-                            hft_core::Direction::Up => Some(ob.yes_book.best_bid()),
-                            hft_core::Direction::Down => Some(ob.no_book.best_bid()),
-                        }
+                        tokio::task::block_in_place(|| {
+                            let books = futures::executor::block_on(orderbooks.read());
+                            let ob = books.get(&trade.market_id.0)?;
+                            match trade.direction {
+                                hft_core::Direction::Up => Some(ob.yes_book.best_bid()),
+                                hft_core::Direction::Down => Some(ob.no_book.best_bid()),
+                            }
+                        })
                     },
                     &self.exit_config,
                 );
             }
 
-            // Small delay to avoid busy loop (100 microseconds)
-            tokio::time::sleep(Duration::from_micros(100)).await;
+            // Small delay to avoid busy loop (1 millisecond)
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
 
         // Cleanup

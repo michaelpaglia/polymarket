@@ -305,7 +305,7 @@ impl PriceWindow {
             return 0;
         }
         let change = (current - previous) / previous * Decimal::from(10000);
-        change.to_string().parse::<f64>().unwrap_or(0.0) as i32
+        change.round().to_i32().unwrap_or(0)
     }
 
     fn decimal_to_scaled(&self, price: Decimal) -> Option<u64> {
