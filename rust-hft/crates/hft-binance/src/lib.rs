@@ -2,17 +2,20 @@
 //!
 //! Supports multiple sources:
 //! - Binance (preferred, works from EU)
-//! - Coinbase (fallback, works everywhere)
+//! - Coinbase (fallback, works in US)
+//! - Kraken (alternative, works globally)
 //!
 //! Provides low-latency price streaming with automatic reconnection
 //! and momentum calculation.
 
 mod client;
 mod coinbase;
+mod kraken;
 mod types;
 
 pub use client::*;
 pub use coinbase::*;
+pub use kraken::*;
 pub use types::*;
 
 use std::sync::Arc;
@@ -45,10 +48,20 @@ impl From<CoinbaseError> for PriceFeedError {
     }
 }
 
-/// Unified price feed that can use either Binance or Coinbase
+impl From<KrakenError> for PriceFeedError {
+    fn from(e: KrakenError) -> Self {
+        match e {
+            KrakenError::Connection(s) => PriceFeedError::Connection(s),
+            KrakenError::Parse(s) => PriceFeedError::Parse(s),
+        }
+    }
+}
+
+/// Unified price feed that can use Binance, Coinbase, or Kraken
 pub enum PriceFeed {
     Binance(Arc<BinanceClient>),
     Coinbase(Arc<CoinbaseClient>),
+    Kraken(Arc<KrakenClient>),
 }
 
 impl PriceFeed {
@@ -62,11 +75,17 @@ impl PriceFeed {
         PriceFeed::Coinbase(Arc::new(CoinbaseClient::new(config)))
     }
 
+    /// Create a new Kraken price feed
+    pub fn kraken(config: KrakenConfig) -> Self {
+        PriceFeed::Kraken(Arc::new(KrakenClient::new(config)))
+    }
+
     /// Connect to the price feed
     pub async fn connect(&self) -> Result<(), PriceFeedError> {
         match self {
             PriceFeed::Binance(client) => client.connect().await.map_err(Into::into),
             PriceFeed::Coinbase(client) => client.connect().await.map_err(Into::into),
+            PriceFeed::Kraken(client) => client.connect().await.map_err(Into::into),
         }
     }
 
@@ -75,6 +94,7 @@ impl PriceFeed {
         match self {
             PriceFeed::Binance(client) => client.is_connected(),
             PriceFeed::Coinbase(client) => client.is_connected(),
+            PriceFeed::Kraken(client) => client.is_connected(),
         }
     }
 
@@ -83,6 +103,7 @@ impl PriceFeed {
         match self {
             PriceFeed::Binance(client) => client.stop(),
             PriceFeed::Coinbase(client) => client.stop(),
+            PriceFeed::Kraken(client) => client.stop(),
         }
     }
 
@@ -91,6 +112,7 @@ impl PriceFeed {
         match self {
             PriceFeed::Binance(client) => client.get_momentum(asset),
             PriceFeed::Coinbase(client) => client.get_momentum(asset),
+            PriceFeed::Kraken(client) => client.get_momentum(asset),
         }
     }
 
@@ -99,6 +121,7 @@ impl PriceFeed {
         match self {
             PriceFeed::Binance(client) => client.get_all_momenta(),
             PriceFeed::Coinbase(client) => client.get_all_momenta(),
+            PriceFeed::Kraken(client) => client.get_all_momenta(),
         }
     }
 
@@ -107,6 +130,16 @@ impl PriceFeed {
         match self {
             PriceFeed::Binance(_) => "Binance",
             PriceFeed::Coinbase(_) => "Coinbase",
+            PriceFeed::Kraken(_) => "Kraken",
+        }
+    }
+
+    /// Get messages received count (for debugging)
+    pub fn messages_received(&self) -> u64 {
+        match self {
+            PriceFeed::Binance(client) => client.messages_received(),
+            PriceFeed::Coinbase(client) => client.messages_received(),
+            PriceFeed::Kraken(client) => client.messages_received(),
         }
     }
 }

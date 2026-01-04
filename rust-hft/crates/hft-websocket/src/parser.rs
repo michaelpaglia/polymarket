@@ -23,6 +23,8 @@ pub fn parse_message(text: &str) -> Result<WsMessage, HftError> {
         Some("tick_size_change") => parse_tick_size(text),
         // Batch price_changes - silently ignore (we use book updates for orderbook state)
         Some("price_changes_batch") => Ok(WsMessage::Unknown(text.to_string())),
+        // Trade notifications - silently ignore (we only care about book updates)
+        Some("trade_notification") => Ok(WsMessage::Unknown(text.to_string())),
         _ => {
             warn!(text = &text[..text.len().min(200)], "Unknown message type");
             Ok(WsMessage::Unknown(text.to_string()))
@@ -193,6 +195,29 @@ fn detect_event_type(text: &str) -> Option<String> {
     // Format: {"market":"0x...", "price_changes":[...]}
     if text.contains("\"price_changes\"") {
         return Some("price_changes_batch".to_string());
+    }
+
+    // Check for book update without event_type field
+    // New format: {"market":"0x...", "asset_id":"...", "bids":[...], "asks":[...]}
+    // OR just one side: {"market":"0x...", "asset_id":"...", "bids":[...]}
+    // IMPORTANT: Must check for bids/asks BEFORE checking for price/size (trade messages also have asset_id)
+    if text.contains("\"bids\"") || text.contains("\"asks\"") {
+        return Some("book".to_string());
+    }
+
+    // Check for single price/trade update: {"market":"...", "asset_id":"...", "price":"...", "size":"..."}
+    // These are trade notifications, not orderbook updates - silently ignore them as we use books
+    // Also matches newer format with fee_rate_bps field
+    let has_price = text.contains("\"price\"");
+    let has_size = text.contains("\"size\"");
+    let has_asset = text.contains("\"asset_id\"");
+    if has_price && has_size && has_asset {
+        return Some("trade_notification".to_string());
+    }
+
+    // Also check for simpler format without all fields (still a trade if it has market + price)
+    if text.contains("\"market\"") && has_price && !text.contains("\"bids\"") && !text.contains("\"asks\"") {
+        return Some("trade_notification".to_string());
     }
 
     None
