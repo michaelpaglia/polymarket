@@ -220,6 +220,16 @@ fn detect_event_type(text: &str) -> Option<String> {
         return Some("trade_notification".to_string());
     }
 
+    // Catch trade/fill messages with fee_rate_bps (newer Polymarket format)
+    if text.contains("\"fee_rate_bps\"") || text.contains("\"fee\"") {
+        return Some("trade_notification".to_string());
+    }
+
+    // Catch any message with market + asset_id that isn't a book (likely trade-related)
+    if text.contains("\"market\"") && has_asset && !text.contains("\"bids\"") && !text.contains("\"asks\"") {
+        return Some("trade_notification".to_string());
+    }
+
     None
 }
 

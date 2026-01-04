@@ -351,7 +351,8 @@ mod tests {
             up_token_id: TokenId::new("up"),
             down_token_id: TokenId::new("down"),
             strike_price: None,
-            end_time: Utc::now() + chrono::Duration::minutes(15),
+            start_time: Utc::now() - chrono::Duration::minutes(5),
+            end_time: Utc::now() + chrono::Duration::minutes(10),
             discovered_at: Utc::now(),
             question: "Test market".to_string(),
         }
