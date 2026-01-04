@@ -1,0 +1,35 @@
+[package]
+name = "hft-discovery"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "15-minute crypto market discovery for Polymarket"
+
+[dependencies]
+# Internal
+hft-core = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+
+# HTTP
+reqwest = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Concurrency
+parking_lot = { workspace = true }
+dashmap = { workspace = true }
+
+# Utilities
+rust_decimal = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+regex = "1.10"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }

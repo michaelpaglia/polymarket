@@ -1,0 +1,93 @@
+# Crypto Latency HFT Configuration
+# Exploits price delay between Binance and Polymarket 15-minute markets
+
+[binance]
+# WebSocket configuration (port 443 for proxy compatibility)
+ws_url = "wss://stream.binance.com:443/ws"
+streams = ["btcusdt@aggTrade", "ethusdt@aggTrade"]
+reconnect_delay_ms = 1000
+ping_interval_ms = 30000
+# Price window settings
+window_size = 1000
+window_max_age_ms = 60000
+
+[polymarket]
+# WebSocket configuration
+ws_url = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+rest_url = "https://clob.polymarket.com"
+gamma_url = "https://gamma-api.polymarket.com"
+chain_id = 137
+
+[signal]
+# Minimum price change in bps to trigger signal evaluation
+min_trigger_bps = 15
+# Minimum edge in bps to execute trade (0.10% = 10 bps)
+min_edge_bps = 10
+# Maximum Polymarket data age before considered stale (ms)
+max_polymarket_age_ms = 500
+# Minimum Polymarket data age - need some lag to exploit (ms)
+min_polymarket_age_ms = 50
+# Minimum confidence score (0.0 to 1.0)
+min_confidence = 0.60
+# Cooldown between signals on same asset (ms)
+asset_cooldown_ms = 5000
+# Maximum signals per minute (rate limiting)
+max_signals_per_minute = 30
+# Sensitivity for price-to-probability mapping
+price_sensitivity = 0.003
+# Base probability at strike price
+base_probability = 0.5
+
+[trading]
+# Enable paper trading mode (true = simulation, false = real orders)
+paper_mode = true
+# Position size per trade (USD)
+position_size_usd = 50.0
+# Take profit threshold (bps) - exit at +0.15%
+take_profit_bps = 15
+# Stop loss threshold (bps) - exit at -0.20%
+stop_loss_bps = 20
+# Maximum hold time before force exit (seconds)
+max_hold_secs = 180
+# Maximum open positions simultaneously
+max_positions = 5
+# Maximum daily trades
+max_daily_trades = 300
+# Stop trading N seconds before market resolution
+stop_before_resolution_secs = 60
+
+[discovery]
+# Market refresh interval (seconds)
+refresh_interval_secs = 30
+# Minimum liquidity for market to be tradeable (USD)
+min_liquidity_usd = 500.0
+# Minimum time to resolution (seconds)
+min_time_to_resolution_secs = 120
+# Maximum time to resolution for 15-min markets (seconds)
+max_time_to_resolution_secs = 1200
+
+[paper_trading]
+# Starting capital for paper trading (USD)
+initial_capital = 5000.0
+# Simulated fill rate (0.0 to 1.0)
+fill_rate = 0.95
+# Simulated slippage in basis points
+slippage_bps = 5
+# Simulated execution latency (ms)
+execution_latency_ms = 50
+# Whether to simulate partial fills
+simulate_partial_fills = false
+# Commission per trade in bps (0 for Polymarket)
+commission_bps = 0
+# Maximum trades to keep in history
+max_trade_history = 10000
+
+[metrics]
+# Prometheus metrics port
+prometheus_port = 9091
+# Log level (trace, debug, info, warn, error)
+log_level = "info"
+# JSON formatted logs
+json_logs = false
+# Stats print interval (seconds)
+stats_interval_secs = 60

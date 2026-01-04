@@ -1,0 +1,28 @@
+[package]
+name = "hft-simulator"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Paper trading simulation for crypto latency strategy"
+
+[dependencies]
+# Internal
+hft-core = { workspace = true }
+
+# Concurrency
+parking_lot = { workspace = true }
+dashmap = { workspace = true }
+
+# Utilities
+rust_decimal = { workspace = true }
+rust_decimal_macros = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+rand = "0.8"
+serde = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }

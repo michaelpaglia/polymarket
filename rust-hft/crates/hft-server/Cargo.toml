@@ -7,6 +7,22 @@ edition.workspace = true
 name = "hft-server"
 path = "src/main.rs"
 
+[[bin]]
+name = "crypto-latency"
+path = "src/crypto_latency.rs"
+
+[[bin]]
+name = "coinbase-test"
+path = "src/coinbase_test.rs"
+
+[[bin]]
+name = "redeem-test"
+path = "src/redeem_test.rs"
+
+[[bin]]
+name = "simulation-test"
+path = "src/simulation_test.rs"
+
 [dependencies]
 hft-core.workspace = true
 hft-websocket.workspace = true
@@ -14,11 +30,19 @@ hft-executor.workspace = true
 hft-risk.workspace = true
 hft-api.workspace = true
 hft-metrics.workspace = true
+hft-binance.workspace = true
+hft-signal.workspace = true
+hft-simulator.workspace = true
+hft-discovery.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 config.workspace = true
 dotenvy.workspace = true
 anyhow.workspace = true
 rust_decimal.workspace = true
+rust_decimal_macros.workspace = true
 serde.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+futures = "0.3"
