@@ -1,7 +1,7 @@
 //! Trading session statistics
 
 use chrono::{DateTime, Utc};
-use rust_decimal::Decimal;
+use rust_decimal::prelude::*;
 use rust_decimal_macros::dec;
 use serde::Serialize;
 use std::collections::VecDeque;
@@ -134,8 +134,8 @@ impl SessionStats {
         if self.initial_capital.is_zero() {
             return 0.0;
         }
-        let pnl_f64: f64 = self.total_pnl.to_string().parse().unwrap_or(0.0);
-        let capital_f64: f64 = self.initial_capital.to_string().parse().unwrap_or(1.0);
+        let pnl_f64 = self.total_pnl.to_f64().unwrap_or(0.0);
+        let capital_f64 = self.initial_capital.to_f64().unwrap_or(1.0);
         (pnl_f64 / capital_f64) * 100.0
     }
 
@@ -205,8 +205,8 @@ impl StatsTracker {
         if drawdown > stats.max_drawdown {
             stats.max_drawdown = drawdown;
             if !peak.is_zero() {
-                let dd_f64: f64 = drawdown.to_string().parse().unwrap_or(0.0);
-                let peak_f64: f64 = peak.to_string().parse().unwrap_or(1.0);
+                let dd_f64 = drawdown.to_f64().unwrap_or(0.0);
+                let peak_f64 = peak.to_f64().unwrap_or(1.0);
                 stats.max_drawdown_pct = (dd_f64 / peak_f64) * 100.0;
             }
         }

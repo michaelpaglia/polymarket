@@ -6,7 +6,7 @@
 use anyhow::Result;
 use chrono::{Duration as ChronoDuration, Utc};
 use hft_core::{CryptoAsset, CryptoMarket, Direction, LatencySignal, MarketId, TokenId};
-use hft_simulator::{ExitConfig, PaperTradeSimulator, SimulatorConfig};
+use hft_simulator::{PaperTradeSimulator, SimulatorConfig};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use std::time::Duration;

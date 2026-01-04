@@ -402,17 +402,7 @@ impl BinanceClient {
         R: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
             + Unpin,
     {
-        // Spawn ping task
-        let running = self.running.clone();
-        let ping_interval = self.config.ping_interval_ms;
-        let ping_handle = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_millis(ping_interval));
-            while running.load(Ordering::SeqCst) {
-                interval.tick().await;
-            }
-        });
-
-        // Message processing loop
+        // Message processing loop (ping/pong handled automatically by tokio-tungstenite)
         while let Some(msg_result) = read.next().await {
             if !self.running.load(Ordering::SeqCst) {
                 break;
@@ -436,13 +426,11 @@ impl BinanceClient {
                 Ok(_) => {}
                 Err(e) => {
                     error!(error = %e, "Binance WebSocket read error");
-                    ping_handle.abort();
                     return Err(BinanceError::Connection(e.to_string()));
                 }
             }
         }
 
-        ping_handle.abort();
         Ok(())
     }
 

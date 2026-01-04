@@ -6,7 +6,7 @@ use dashmap::DashMap;
 use hft_core::{CryptoMarket, DirectionalTrade, LatencySignal, Side, TradeStatus};
 use parking_lot::RwLock;
 use rand::Rng;
-use rust_decimal::Decimal;
+use rust_decimal::prelude::*;
 use rust_decimal_macros::dec;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -208,9 +208,7 @@ impl PaperTradeSimulator {
 
         // Calculate P&L in bps
         let pnl_bps = if !trade.size_usd.is_zero() {
-            let pnl_f64: f64 = net_pnl.to_string().parse().unwrap_or(0.0);
-            let size_f64: f64 = trade.size_usd.to_string().parse().unwrap_or(1.0);
-            ((pnl_f64 / size_f64) * 10000.0) as i32
+            ((net_pnl / trade.size_usd) * dec!(10000)).to_i32().unwrap_or(0)
         } else {
             0
         };
@@ -290,8 +288,7 @@ impl PaperTradeSimulator {
             return 0;
         }
         let change = (current_price - trade.entry_price) / trade.entry_price;
-        let bps = change * dec!(10000);
-        bps.to_string().parse::<f64>().unwrap_or(0.0) as i32
+        (change * dec!(10000)).to_i32().unwrap_or(0)
     }
 
     /// Reset simulator

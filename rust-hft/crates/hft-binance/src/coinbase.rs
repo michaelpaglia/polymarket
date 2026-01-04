@@ -266,12 +266,10 @@ impl CoinbaseClient {
 
     /// Parse match message into tick
     fn parse_match(&self, msg: &CoinbaseMatch, received_ns: u64) -> Option<BinanceTick> {
-        let asset = if msg.product_id.starts_with("BTC") {
-            CryptoAsset::BTC
-        } else if msg.product_id.starts_with("ETH") {
-            CryptoAsset::ETH
-        } else {
-            return None;
+        let asset = match msg.product_id.as_str() {
+            "BTC-USD" => CryptoAsset::BTC,
+            "ETH-USD" => CryptoAsset::ETH,
+            _ => return None,
         };
 
         let price = msg.price.parse::<rust_decimal::Decimal>().ok()?;
