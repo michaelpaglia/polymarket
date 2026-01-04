@@ -66,19 +66,23 @@ impl BookLevel {
 #[derive(Debug, Clone, Deserialize)]
 pub struct PriceChangeMessage {
     pub asset_id: String,
+    #[serde(default)]
     pub market: String,
     pub price: String,
     pub size: String,
-    pub side: String,
-    pub timestamp: String,
+    #[serde(default)]
+    pub side: Option<String>,
+    #[serde(default)]
+    pub timestamp: Option<String>,
+    #[serde(default)]
+    pub fee: Option<String>,
 }
 
 impl PriceChangeMessage {
     pub fn side(&self) -> Side {
-        if self.side.to_uppercase() == "BUY" {
-            Side::Buy
-        } else {
-            Side::Sell
+        match self.side.as_deref() {
+            Some(s) if s.to_uppercase() == "BUY" => Side::Buy,
+            _ => Side::Sell,
         }
     }
 

@@ -578,7 +578,7 @@ impl WebSocketClient {
                 debug!(
                     asset_id = %change.asset_id,
                     price = %change.price,
-                    side = %change.side,
+                    side = ?change.side,
                     "Price change"
                 );
             }
