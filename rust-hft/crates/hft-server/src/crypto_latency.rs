@@ -4,7 +4,7 @@
 //! when Binance price moves before Polymarket orderbook catches up.
 
 use anyhow::Result;
-use hft_binance::{BinanceConfig, CoinbaseConfig, CryptoAsset, PriceFeed};
+use hft_binance::{BinanceConfig, CoinbaseConfig, KrakenConfig, CryptoAsset, PriceFeed};
 use hft_core::{CryptoLatencyConfig, MarketOrderbook, TradingState};
 use hft_discovery::{CryptoMarketDiscovery, DiscoveryConfig};
 use hft_executor::PositionRedeemer;
@@ -286,6 +286,9 @@ impl CryptoLatencyApp {
         self.set_state(TradingState::Running).await;
         info!("Trading loop active - scanning for signals");
 
+        // Track for periodic debug logging
+        let mut last_debug_log = std::time::Instant::now();
+
         // Main trading loop
         while self.running.load(Ordering::SeqCst) {
             let state = self.state().await;
@@ -296,6 +299,52 @@ impl CryptoLatencyApp {
 
             // Get momentum from price feed
             let momenta = self.price_feed.get_all_momenta();
+
+            // Periodic debug logging every 10 seconds
+            if last_debug_log.elapsed() > Duration::from_secs(10) {
+                last_debug_log = std::time::Instant::now();
+                let active_markets = self.discovery.active_count();
+
+                if momenta.is_empty() {
+                    info!("No momentum data - price feed may not be receiving trades");
+                } else {
+                    for m in &momenta {
+                        info!(
+                            asset = %m.asset,
+                            price = %m.current_price,
+                            change_1s_bps = m.change_1s_bps,
+                            change_5s_bps = m.change_5s_bps,
+                            "Momentum (need ±10bps in aggressive mode)"
+                        );
+                    }
+                }
+
+                // Log orderbook state for our markets (using try_read to avoid blocking)
+                if let Ok(books) = self.orderbooks.try_read() {
+                    for (market_id, orderbook) in books.iter() {
+                        let yes_bid = orderbook.yes_book.best_bid();
+                        let yes_ask = orderbook.yes_book.best_ask();
+                        let age_ms = orderbook.min_age_ms();
+                        if !yes_bid.is_zero() || !yes_ask.is_zero() {
+                            info!(
+                                market = %market_id,
+                                yes_bid = %yes_bid,
+                                yes_ask = %yes_ask,
+                                age_ms = age_ms,
+                                "Orderbook state"
+                            );
+                        } else {
+                            info!(market = %market_id, "Orderbook has no data yet");
+                        }
+                    }
+                }
+
+                if active_markets == 0 {
+                    info!("No active 15-minute crypto markets found");
+                } else {
+                    info!(count = active_markets, "Active markets");
+                }
+            }
 
             for momentum in momenta {
                 // Get active markets for this asset
@@ -466,7 +515,21 @@ async fn main() -> Result<()> {
 
     // Load configuration
     let config = CryptoLatencyConfig::default();
-    let signal_config = SignalConfig::default();
+
+    // Use aggressive signal config if AGGRESSIVE_MODE=1
+    let aggressive_mode = std::env::var("AGGRESSIVE_MODE")
+        .map(|v| v == "1" || v.to_lowercase() == "true")
+        .unwrap_or(false);
+
+    let signal_config = if aggressive_mode {
+        info!("Using AGGRESSIVE signal detection (lower thresholds)");
+        SignalConfig::aggressive()
+    } else {
+        info!("Using DEFAULT signal detection (min_trigger=15bps, min_edge=10bps)");
+        info!("Tip: Set AGGRESSIVE_MODE=1 for lower thresholds during testing");
+        SignalConfig::default()
+    };
+
     let simulator_config = SimulatorConfig::default();
     let discovery_config = DiscoveryConfig::default();
 
@@ -484,13 +547,22 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Create price feed - use Coinbase if USE_COINBASE=1 (for US testing)
-    // Otherwise use Binance (for production on EU/NL server)
+    // Create price feed - check env vars for feed selection
+    // USE_COINBASE=1 for Coinbase (US testing)
+    // USE_KRAKEN=1 for Kraken (works globally)
+    // Default: Binance (for production on EU/NL server)
     let use_coinbase = std::env::var("USE_COINBASE")
         .map(|v| v == "1" || v.to_lowercase() == "true")
         .unwrap_or(false);
 
-    let price_feed = if use_coinbase {
+    let use_kraken = std::env::var("USE_KRAKEN")
+        .map(|v| v == "1" || v.to_lowercase() == "true")
+        .unwrap_or(false);
+
+    let price_feed = if use_kraken {
+        info!("Using Kraken price feed (works globally)");
+        Arc::new(PriceFeed::kraken(KrakenConfig::default()))
+    } else if use_coinbase {
         info!("Using Coinbase price feed (works from US for testing)");
         Arc::new(PriceFeed::coinbase(CoinbaseConfig::default()))
     } else {
@@ -526,22 +598,25 @@ async fn main() -> Result<()> {
         polymarket_client,
     ));
 
-    // Start stats printer
+    // Start stats printer with detailed momentum logging
     let stats_app = app.clone();
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        let mut interval = tokio::time::interval(Duration::from_secs(30));
         loop {
             interval.tick().await;
             let stats = stats_app.stats();
+
             info!(
                 signals = stats.signals_detected,
                 trades = stats.trades_executed,
                 open = stats.open_positions,
+                markets = stats.active_markets,
                 pnl = %stats.total_pnl,
                 win_rate = format!("{:.1}%", stats.win_rate * 100.0),
-                profit_factor = format!("{:.2}", stats.profit_factor),
-                trades_per_hour = format!("{:.1}", stats.trades_per_hour),
-                "Stats update"
+                price_feed = stats.price_feed_source,
+                price_connected = stats.price_feed_connected,
+                pm_connected = stats.polymarket_connected,
+                "Stats"
             );
         }
     });
