@@ -40,7 +40,12 @@ impl ProxyConfig {
             let port = parts[1].parse().ok()?;
             let username = parts.get(2).map(|s| s.to_string());
             let password = parts.get(3).map(|s| s.to_string());
-            Some(Self { host, port, username, password })
+            Some(Self {
+                host,
+                port,
+                username,
+                password,
+            })
         } else {
             None
         }
@@ -89,7 +94,11 @@ impl ProxyRotator {
             ));
         }
 
-        info!(count = proxies.len(), path = path, "Loaded proxies from file");
+        info!(
+            count = proxies.len(),
+            path = path,
+            "Loaded proxies from file"
+        );
         Ok(Self::new(proxies))
     }
 
@@ -98,7 +107,9 @@ impl ProxyRotator {
         if self.proxies.is_empty() {
             return None;
         }
-        let idx = self.current_index.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let idx = self
+            .current_index
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Some(&self.proxies[idx % self.proxies.len()])
     }
 
@@ -107,7 +118,9 @@ impl ProxyRotator {
         if self.proxies.is_empty() {
             return None;
         }
-        let idx = self.current_index.load(std::sync::atomic::Ordering::Relaxed);
+        let idx = self
+            .current_index
+            .load(std::sync::atomic::Ordering::Relaxed);
         Some(&self.proxies[idx % self.proxies.len()])
     }
 
@@ -153,34 +166,47 @@ async fn connect_via_proxy(
 
     // Send CONNECT request
     let (reader, mut writer) = stream.into_split();
-    writer.write_all(connect_request.as_bytes()).await
+    writer
+        .write_all(connect_request.as_bytes())
+        .await
         .map_err(|e| HftError::WebSocketConnection(format!("Failed to send CONNECT: {}", e)))?;
 
     // Read response
     let mut buf_reader = BufReader::new(reader);
     let mut response_line = String::new();
-    buf_reader.read_line(&mut response_line).await
-        .map_err(|e| HftError::WebSocketConnection(format!("Failed to read proxy response: {}", e)))?;
+    buf_reader
+        .read_line(&mut response_line)
+        .await
+        .map_err(|e| {
+            HftError::WebSocketConnection(format!("Failed to read proxy response: {}", e))
+        })?;
 
     // Check for 200 OK
-    if !response_line.contains(" 200 ") && !response_line.starts_with("HTTP/1.1 200") && !response_line.starts_with("HTTP/1.0 200") {
+    if !response_line.contains(" 200 ")
+        && !response_line.starts_with("HTTP/1.1 200")
+        && !response_line.starts_with("HTTP/1.0 200")
+    {
         return Err(HftError::WebSocketConnection(format!(
-            "Proxy CONNECT failed: {}", response_line.trim()
+            "Proxy CONNECT failed: {}",
+            response_line.trim()
         )));
     }
 
     // Read remaining headers until empty line
     loop {
         let mut header = String::new();
-        buf_reader.read_line(&mut header).await
-            .map_err(|e| HftError::WebSocketConnection(format!("Failed to read proxy headers: {}", e)))?;
+        buf_reader.read_line(&mut header).await.map_err(|e| {
+            HftError::WebSocketConnection(format!("Failed to read proxy headers: {}", e))
+        })?;
         if header.trim().is_empty() {
             break;
         }
     }
 
     // Reunite the stream
-    let stream = buf_reader.into_inner().reunite(writer)
+    let stream = buf_reader
+        .into_inner()
+        .reunite(writer)
         .map_err(|e| HftError::WebSocketConnection(format!("Failed to reunite stream: {}", e)))?;
 
     info!(proxy = %proxy_addr, "Proxy tunnel established");
@@ -386,7 +412,11 @@ impl WebSocketClient {
                         self.config.reconnect_delay_ms
                     };
                     let delay = base_delay * reconnect_attempts.min(10) as u64;
-                    warn!(delay_ms = delay, attempt = reconnect_attempts, "Reconnecting...");
+                    warn!(
+                        delay_ms = delay,
+                        attempt = reconnect_attempts,
+                        "Reconnecting..."
+                    );
                     tokio::time::sleep(Duration::from_millis(delay)).await;
                 }
             }
@@ -435,13 +465,23 @@ impl WebSocketClient {
     /// Connect via HTTP CONNECT proxy
     async fn connect_via_proxy_impl(&self, proxy_config: &ProxyConfig) -> HftResult<()> {
         // Parse the WebSocket URL to extract host and port
-        let uri: Uri = self.config.url.parse()
+        let uri: Uri = self
+            .config
+            .url
+            .parse()
             .map_err(|e| HftError::WebSocketConnection(format!("Invalid URL: {}", e)))?;
 
-        let host = uri.host()
+        let host = uri
+            .host()
             .ok_or_else(|| HftError::WebSocketConnection("URL missing host".to_string()))?;
 
-        let port = uri.port_u16().unwrap_or(if uri.scheme_str() == Some("wss") { 443 } else { 80 });
+        let port = uri
+            .port_u16()
+            .unwrap_or(if uri.scheme_str() == Some("wss") {
+                443
+            } else {
+                80
+            });
         let use_tls = uri.scheme_str() == Some("wss");
 
         // Connect via HTTP CONNECT proxy
@@ -451,18 +491,27 @@ impl WebSocketClient {
             // Upgrade to TLS
             let tls_connector = tokio_tungstenite::Connector::NativeTls(
                 native_tls::TlsConnector::new()
-                    .map_err(|e| HftError::WebSocketConnection(format!("TLS error: {}", e)))?
+                    .map_err(|e| HftError::WebSocketConnection(format!("TLS error: {}", e)))?,
             );
 
-            let request = tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(&self.config.url)
-                .map_err(|e| HftError::WebSocketConnection(format!("Request build error: {}", e)))?;
+            let request =
+                tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(
+                    &self.config.url,
+                )
+                .map_err(|e| {
+                    HftError::WebSocketConnection(format!("Request build error: {}", e))
+                })?;
 
             let (ws_stream, _) = tokio_tungstenite::client_async_tls_with_config(
                 request,
                 tcp_stream,
                 None,
                 Some(tls_connector),
-            ).await.map_err(|e| HftError::WebSocketConnection(format!("WebSocket handshake failed: {}", e)))?;
+            )
+            .await
+            .map_err(|e| {
+                HftError::WebSocketConnection(format!("WebSocket handshake failed: {}", e))
+            })?;
 
             info!("WebSocket connected via proxy (TLS)");
             self.state.store(Arc::new(ConnectionState::Connected));
@@ -472,12 +521,17 @@ impl WebSocketClient {
             self.run_message_loop(&mut read).await
         } else {
             // Plain WebSocket over proxy tunnel
-            let request = tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(&self.config.url)
-                .map_err(|e| HftError::WebSocketConnection(format!("Request build error: {}", e)))?;
+            let request =
+                tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(
+                    &self.config.url,
+                )
+                .map_err(|e| {
+                    HftError::WebSocketConnection(format!("Request build error: {}", e))
+                })?;
 
-            let (ws_stream, _) = client_async(request, tcp_stream)
-                .await
-                .map_err(|e| HftError::WebSocketConnection(format!("WebSocket handshake failed: {}", e)))?;
+            let (ws_stream, _) = client_async(request, tcp_stream).await.map_err(|e| {
+                HftError::WebSocketConnection(format!("WebSocket handshake failed: {}", e))
+            })?;
 
             info!("WebSocket connected via proxy");
             self.state.store(Arc::new(ConnectionState::Connected));

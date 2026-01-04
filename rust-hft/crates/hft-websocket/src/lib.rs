@@ -6,9 +6,9 @@
 //! - Automatic reconnection
 
 pub mod client;
-pub mod parser;
 pub mod messages;
+pub mod parser;
 
 pub use client::*;
-pub use parser::*;
 pub use messages::*;
+pub use parser::*;
