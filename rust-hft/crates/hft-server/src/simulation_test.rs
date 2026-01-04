@@ -14,7 +14,8 @@ use tracing::info;
 
 fn create_test_market(asset: CryptoAsset) -> CryptoMarket {
     let now = Utc::now();
-    let end_time = now + ChronoDuration::minutes(15);
+    let start_time = now - ChronoDuration::minutes(5);
+    let end_time = now + ChronoDuration::minutes(10);
 
     CryptoMarket {
         market_id: MarketId(format!("test-{}-15m", asset)),
@@ -22,6 +23,7 @@ fn create_test_market(asset: CryptoAsset) -> CryptoMarket {
         up_token_id: TokenId(format!("up-token-{}", asset)),
         down_token_id: TokenId(format!("down-token-{}", asset)),
         strike_price: Some(dec!(91000)),
+        start_time,
         end_time,
         discovered_at: now,
         question: format!("Will {} go up in the next 15 minutes?", asset),

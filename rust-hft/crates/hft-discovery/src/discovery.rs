@@ -6,6 +6,9 @@
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use hft_core::{CryptoAsset, CryptoMarket, MarketId, TokenId};
+use parking_lot::Mutex;
+use rust_decimal::Decimal;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
@@ -37,12 +40,100 @@ impl Default for DiscoveryConfig {
     }
 }
 
+/// Price snapshot for momentum tracking
+#[derive(Debug, Clone)]
+struct PriceSnapshot {
+    up_price: f64,
+    down_price: f64,
+    timestamp: DateTime<Utc>,
+}
+
+/// Price momentum tracker for a single market
+struct PriceMomentum {
+    /// Recent price snapshots (newest at back)
+    history: VecDeque<PriceSnapshot>,
+    /// Maximum history size
+    max_size: usize,
+}
+
+impl PriceMomentum {
+    fn new() -> Self {
+        Self {
+            history: VecDeque::with_capacity(20),
+            max_size: 20, // Keep ~10 minutes of data at 30s refresh
+        }
+    }
+
+    fn record(&mut self, up_price: f64, down_price: f64) {
+        self.history.push_back(PriceSnapshot {
+            up_price,
+            down_price,
+            timestamp: Utc::now(),
+        });
+
+        while self.history.len() > self.max_size {
+            self.history.pop_front();
+        }
+    }
+
+    /// Calculate price momentum (direction and strength)
+    /// Returns (direction, strength_bps)
+    /// direction: true = price moving up (favoring UP outcome), false = moving down
+    fn momentum(&self) -> Option<(bool, i32)> {
+        if self.history.len() < 2 {
+            return None;
+        }
+
+        let oldest = self.history.front()?;
+        let newest = self.history.back()?;
+
+        // Check UP price change (negative change = UP is getting cheaper = more bullish)
+        let up_change = newest.up_price - oldest.up_price;
+        let down_change = newest.down_price - oldest.down_price;
+
+        // If UP price is decreasing (cheaper to buy UP), that's bullish momentum
+        // If DOWN price is decreasing (cheaper to buy DOWN), that's bearish momentum
+        let direction_up = up_change < down_change;
+
+        // Strength is the magnitude of the stronger signal
+        let strength_bps = ((up_change.abs().max(down_change.abs())) * 10000.0) as i32;
+
+        if strength_bps > 0 {
+            Some((direction_up, strength_bps))
+        } else {
+            None
+        }
+    }
+
+    /// Get recent price velocity (change per minute)
+    fn velocity_per_min(&self) -> Option<f64> {
+        if self.history.len() < 2 {
+            return None;
+        }
+
+        let oldest = self.history.front()?;
+        let newest = self.history.back()?;
+
+        let time_diff = (newest.timestamp - oldest.timestamp).num_seconds() as f64;
+        if time_diff < 10.0 {
+            return None;
+        }
+
+        let up_change = newest.up_price - oldest.up_price;
+        Some(up_change * 60.0 / time_diff) // Change per minute
+    }
+}
+
 /// Market discovery service
 pub struct CryptoMarketDiscovery {
     config: DiscoveryConfig,
     client: reqwest::Client,
     /// Active markets by market ID
     markets: DashMap<String, Arc<CryptoMarket>>,
+    /// Cached outcome prices (up_price, down_price) by market ID
+    prices: DashMap<String, (f64, f64)>,
+    /// Price momentum trackers by market ID
+    momentum: Mutex<std::collections::HashMap<String, PriceMomentum>>,
 }
 
 impl CryptoMarketDiscovery {
@@ -57,7 +148,45 @@ impl CryptoMarketDiscovery {
             config,
             client,
             markets: DashMap::new(),
+            prices: DashMap::new(),
+            momentum: Mutex::new(std::collections::HashMap::new()),
         }
+    }
+
+    /// Get cached up price for a market
+    pub fn get_market_up_price(&self, market_id: &str) -> f64 {
+        self.prices.get(market_id).map(|p| p.0).unwrap_or(0.5)
+    }
+
+    /// Get cached down price for a market
+    pub fn get_market_down_price(&self, market_id: &str) -> f64 {
+        self.prices.get(market_id).map(|p| p.1).unwrap_or(0.5)
+    }
+
+    /// Get price momentum for a market
+    /// Returns (direction, strength_bps) where direction true = UP favored
+    pub fn get_market_momentum(&self, market_id: &str) -> Option<(bool, i32)> {
+        let momentum = self.momentum.lock();
+        momentum.get(market_id)?.momentum()
+    }
+
+    /// Get price velocity (change per minute) for a market
+    pub fn get_market_velocity(&self, market_id: &str) -> Option<f64> {
+        let momentum = self.momentum.lock();
+        momentum.get(market_id)?.velocity_per_min()
+    }
+
+    /// Record a price update for momentum tracking
+    fn record_price(&self, market_id: &str, up_price: f64, down_price: f64) {
+        // Update price cache
+        self.prices.insert(market_id.to_string(), (up_price, down_price));
+
+        // Update momentum tracker
+        let mut momentum = self.momentum.lock();
+        momentum
+            .entry(market_id.to_string())
+            .or_insert_with(PriceMomentum::new)
+            .record(up_price, down_price);
     }
 
     /// Get all active markets
@@ -71,6 +200,12 @@ impl CryptoMarketDiscovery {
 
     /// Get markets for a specific asset
     pub fn get_markets_for_asset(&self, asset: CryptoAsset) -> Vec<Arc<CryptoMarket>> {
+        let all: Vec<_> = self.markets.iter().map(|m| m.value().clone()).collect();
+        debug!(
+            asset = ?asset,
+            total_markets = all.len(),
+            "get_markets_for_asset called"
+        );
         self.markets
             .iter()
             .filter(|m| m.value().asset == asset && !m.value().is_expired())
@@ -213,6 +348,24 @@ impl CryptoMarketDiscovery {
         }
     }
 
+    /// Extract strike price from question text
+    /// Format: "Will the price of Bitcoin be above $97,193.81 at 9:00 PM UTC?"
+    fn extract_strike_price(question: &str) -> Option<Decimal> {
+        // Look for dollar sign followed by number with optional commas and decimals
+        // Pattern: $[digits,]digits[.digits]
+        let dollar_pos = question.find('$')?;
+        let after_dollar = &question[dollar_pos + 1..];
+
+        // Extract the number portion (digits, commas, and decimal point)
+        let num_str: String = after_dollar
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == ',' || *c == '.')
+            .filter(|c| *c != ',') // Remove commas
+            .collect();
+
+        num_str.parse::<Decimal>().ok()
+    }
+
     /// Parse a single market from an event's markets[] array
     fn parse_market_from_event(
         &self,
@@ -222,6 +375,16 @@ impl CryptoMarketDiscovery {
     ) -> Option<CryptoMarket> {
         let slug = market.get("slug")?.as_str()?;
         let question = market.get("question")?.as_str()?;
+
+        // Extract strike price from question
+        let strike_price = Self::extract_strike_price(question);
+        if strike_price.is_some() {
+            debug!(
+                slug = %slug,
+                strike = ?strike_price,
+                "Extracted strike price from question"
+            );
+        }
 
         // Check if closed
         let closed = market
@@ -269,17 +432,23 @@ impl CryptoMarketDiscovery {
             .ok()?
             .with_timezone(&Utc);
 
-        // Check time constraints - we want markets that haven't started yet
+        // Check time constraints
         let secs_to_start = (start_time - now).num_seconds();
+        let secs_to_end = (end_time - now).num_seconds();
 
-        // Skip if already started or about to start
-        if secs_to_start < self.config.min_time_to_start_secs {
-            debug!(slug = %slug, secs_to_start = secs_to_start, "Market starting too soon");
+        // Skip if already ended
+        if secs_to_end <= 0 {
+            debug!(slug = %slug, "Market already ended");
             return None;
         }
 
-        // Skip if too far in the future
-        if secs_to_start > self.config.max_time_to_start_secs {
+        // Accept markets that are:
+        // 1. Currently active (started but not ended) - secs_to_start < 0 && secs_to_end > 0
+        // 2. Starting soon (within max_time_to_start_secs)
+        let is_active = secs_to_start <= 0 && secs_to_end > 0;
+        let is_upcoming = secs_to_start > 0 && secs_to_start <= self.config.max_time_to_start_secs;
+
+        if !is_active && !is_upcoming {
             debug!(slug = %slug, secs_to_start = secs_to_start, "Market too far in future");
             return None;
         }
@@ -315,12 +484,36 @@ impl CryptoMarketDiscovery {
             (token_ids[1].clone(), token_ids[0].clone())
         };
 
+        // Get current outcome prices (market's view of Up/Down probability)
+        let outcome_prices_str = market.get("outcomePrices").and_then(|v| v.as_str());
+        let outcome_prices: Option<(f64, f64)> = outcome_prices_str.and_then(|s| {
+            let prices: Vec<String> = serde_json::from_str(s).ok()?;
+            if prices.len() == 2 {
+                let up = prices[0].parse::<f64>().ok()?;
+                let down = prices[1].parse::<f64>().ok()?;
+                Some((up, down))
+            } else {
+                None
+            }
+        });
+
+        let status = if is_active { "ACTIVE" } else { "upcoming" };
+
+        // Store prices in cache and record for momentum tracking
+        if let Some((up, down)) = outcome_prices {
+            self.record_price(slug, up, down);
+        }
+
         info!(
             slug = %slug,
             asset = ?asset,
-            start_time = %start_time,
-            end_time = %end_time,
+            status = status,
+            strike = ?strike_price,
+            secs_to_start = secs_to_start,
+            secs_to_end = secs_to_end,
             liquidity = liquidity,
+            up_price = outcome_prices.map(|p| p.0),
+            down_price = outcome_prices.map(|p| p.1),
             "Discovered 15M market"
         );
 
@@ -329,7 +522,8 @@ impl CryptoMarketDiscovery {
             asset,
             up_token_id: TokenId::new(up_token_id),
             down_token_id: TokenId::new(down_token_id),
-            strike_price: None,
+            strike_price, // Extracted from question (e.g., "$97,193.81")
+            start_time,   // When window starts
             end_time,
             discovered_at: now,
             question: question.to_string(),

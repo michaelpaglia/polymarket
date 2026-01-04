@@ -44,6 +44,10 @@ pub struct CryptoLatencyApp {
     /// Statistics
     signals_detected: AtomicU64,
     trades_executed: AtomicU64,
+    /// Last signal time per market (for rate limiting)
+    last_signal: Arc<RwLock<HashMap<String, std::time::Instant>>>,
+    /// Strike prices by market ID (captured when window starts)
+    strike_prices: Arc<RwLock<HashMap<String, Decimal>>>,
 }
 
 impl CryptoLatencyApp {
@@ -75,6 +79,8 @@ impl CryptoLatencyApp {
             orderbooks: Arc::new(RwLock::new(HashMap::new())),
             signals_detected: AtomicU64::new(0),
             trades_executed: AtomicU64::new(0),
+            last_signal: Arc::new(RwLock::new(HashMap::new())),
+            strike_prices: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -161,7 +167,43 @@ impl CryptoLatencyApp {
             }
         });
 
-        // Start Polymarket WebSocket
+        // Run INITIAL discovery BEFORE connecting WebSocket
+        // This ensures subscriptions are ready when WebSocket connects
+        info!("Running initial market discovery...");
+        match self.discovery.discover().await {
+            Ok(markets) => {
+                info!(count = markets.len(), "Initial discovery found markets");
+                for market in &markets {
+                    let mut books = self.orderbooks.write().await;
+                    if !books.contains_key(&market.market_id.0) {
+                        let orderbook = Arc::new(MarketOrderbook::new(
+                            market.market_id.clone(),
+                            market.up_token_id.clone(),
+                            market.down_token_id.clone(),
+                        ));
+                        self.polymarket.register_market(orderbook.clone()).await;
+                        info!(
+                            up_token = %market.up_token_id.0,
+                            down_token = %market.down_token_id.0,
+                            market = %market.market_id,
+                            "Pre-subscribing to token IDs"
+                        );
+                        self.polymarket
+                            .subscribe(vec![
+                                market.up_token_id.0.clone(),
+                                market.down_token_id.0.clone(),
+                            ])
+                            .await;
+                        books.insert(market.market_id.0.clone(), orderbook);
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(error = %e, "Initial discovery failed, will retry in loop");
+            }
+        }
+
+        // NOW start Polymarket WebSocket (subscriptions are ready)
         let polymarket = self.polymarket.clone();
         let pm_running = self.running.clone();
         let pm_handle = tokio::spawn(async move {
@@ -173,13 +215,15 @@ impl CryptoLatencyApp {
             }
         });
 
-        // Start market discovery loop
+        // Start market discovery loop for ongoing updates
         let discovery = self.discovery.clone();
         let discovery_running = self.running.clone();
         let orderbooks = self.orderbooks.clone();
         let ws_client = self.polymarket.clone();
         let discovery_handle = tokio::spawn(async move {
             let refresh_interval = Duration::from_secs(30);
+            // Skip first iteration since we already did initial discovery
+            tokio::time::sleep(refresh_interval).await;
 
             while discovery_running.load(Ordering::SeqCst) {
                 match discovery.discover().await {
@@ -200,7 +244,13 @@ impl CryptoLatencyApp {
                                 // Register with WebSocket client
                                 ws_client.register_market(orderbook.clone()).await;
 
-                                // Subscribe to tokens
+                                // Subscribe to tokens - log the exact IDs
+                                // NOTE: This only adds to the list, won't be sent until reconnect
+                                info!(
+                                    up_token = %market.up_token_id.0,
+                                    down_token = %market.down_token_id.0,
+                                    "Subscribing to token IDs (pending until reconnect)"
+                                );
                                 ws_client
                                     .subscribe(vec![
                                         market.up_token_id.0.clone(),
@@ -214,6 +264,8 @@ impl CryptoLatencyApp {
                                     market = %market.market_id,
                                     asset = %market.asset,
                                     end_time = %market.end_time,
+                                    up_token = %market.up_token_id.0,
+                                    down_token = %market.down_token_id.0,
                                     "Registered new market"
                                 );
                             }
@@ -300,6 +352,290 @@ impl CryptoLatencyApp {
             // Get momentum from price feed
             let momenta = self.price_feed.get_all_momenta();
 
+            // STRIKE CAPTURE: The strike is the crypto price at window start
+            // For 15M markets, UP wins if end_price >= start_price
+            // We capture the strike when we first see the market as started
+            for market in self.discovery.get_active_markets() {
+                if market.has_started() {
+                    let market_id = &market.market_id.0;
+                    let strikes = self.strike_prices.read().await;
+                    let has_strike = strikes.contains_key(market_id);
+                    drop(strikes);
+
+                    if !has_strike {
+                        // Get current crypto price from Kraken as proxy for strike
+                        // Ideally we'd have the exact price at eventStartTime
+                        let asset_type = match market.asset {
+                            hft_core::CryptoAsset::BTC => CryptoAsset::BTC,
+                            hft_core::CryptoAsset::ETH => CryptoAsset::ETH,
+                        };
+                        if let Some(price) = momenta.iter().find(|m| m.asset == asset_type).map(|m| m.current_price) {
+                            let mut strikes = self.strike_prices.write().await;
+                            strikes.insert(market_id.clone(), price);
+                            let time_left = market.time_to_resolution_secs();
+                            info!(
+                                market = %market_id,
+                                asset = %market.asset,
+                                strike = %price,
+                                time_left_secs = time_left,
+                                "STRIKE CAPTURED: {} @ {} ({}s left in window)",
+                                market.asset,
+                                price,
+                                time_left
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Trading strategy for active markets
+            // Uses discovery prices (which update every 30s) to track momentum
+            let all_markets = self.discovery.get_active_markets();
+            for market in &all_markets {
+                // Only trade active markets (window has started, hasn't ended)
+                if !market.is_active_window() {
+                    continue;
+                }
+
+                // Skip if too close to resolution
+                if !market.is_safe_to_trade(30) {
+                    continue;
+                }
+
+                let market_id = &market.market_id.0;
+                let up_price = self.discovery.get_market_up_price(market_id);
+                let down_price = self.discovery.get_market_down_price(market_id);
+                let time_left = market.time_to_resolution_secs();
+
+                // Rate limit signals - only emit once per 5 seconds per market
+                let should_signal = {
+                    let signals = self.last_signal.read().await;
+                    signals
+                        .get(market_id)
+                        .map(|last| last.elapsed() > Duration::from_secs(5))
+                        .unwrap_or(true)
+                };
+
+                if !should_signal {
+                    continue;
+                }
+
+                let mut emitted_signal = false;
+
+                // TILT SIGNAL: Buy the CHEAP side when market is heavily tilted
+                // If up_price < 0.40, buy UP (contrarian - market expects DOWN)
+                // If down_price < 0.40, buy DOWN (contrarian - market expects UP)
+                let up_cheap = up_price < 0.40;
+                let down_cheap = down_price < 0.40;
+
+                if (up_cheap || down_cheap) && self.config.paper_mode {
+                    // Buy the cheap side
+                    let direction = if up_cheap { hft_core::Direction::Up } else { hft_core::Direction::Down };
+                    let direction_str = if up_cheap { "Up" } else { "Down" };
+                    let entry_price = if up_cheap { up_price } else { down_price };
+                    let tilt_bps = ((0.50 - entry_price.min(0.50)) * 10000.0) as u32;
+                    let payout_if_wins = 1.0 / entry_price;
+
+                    info!(
+                        market = %market_id,
+                        asset = %market.asset,
+                        side = direction_str,
+                        entry = format!("{:.3}", entry_price),
+                        tilt_bps = tilt_bps,
+                        payout = format!("{:.2}x", payout_if_wins),
+                        time_left_secs = time_left,
+                        "TILT: Buy {} @ {:.3} ({}bps from 0.50, payout {:.2}x)",
+                        direction_str,
+                        entry_price,
+                        tilt_bps,
+                        payout_if_wins
+                    );
+
+                    let signal = hft_core::LatencySignal {
+                        signal_id: uuid::Uuid::new_v4().to_string(),
+                        asset: market.asset,
+                        direction,
+                        binance_price: Decimal::ZERO,
+                        price_change_bps: tilt_bps as i32,
+                        polymarket_price: Decimal::try_from(entry_price).unwrap_or(Decimal::new(50, 2)),
+                        expected_price: Decimal::try_from(entry_price + 0.02).unwrap_or(Decimal::new(52, 2)),
+                        edge_bps: tilt_bps,
+                        confidence: 0.55,
+                        detected_at_ns: 0,
+                        binance_update_ns: 0,
+                        polymarket_update_ns: 0,
+                        latency_ms: 0,
+                    };
+
+                    let position_size = Decimal::ONE;
+                    if let Some(trade) = self.simulator.execute_trade(&signal, &market, position_size) {
+                        self.trades_executed.fetch_add(1, Ordering::Relaxed);
+                        info!(
+                            trade_id = %trade.trade_id,
+                            "TRADE: {} {} @ {} ($1 bet)",
+                            market.asset,
+                            direction_str,
+                            trade.entry_price
+                        );
+                    }
+                    emitted_signal = true;
+                }
+
+                // MOMENTUM signal disabled - was creating conflicting bets with TILT
+                // The TILT signal is sufficient for contrarian betting
+                if let Some((up_favored, strength_bps)) = self.discovery.get_market_momentum(market_id) {
+                    if strength_bps >= 50 && !emitted_signal {
+                        let direction_str = if up_favored { "UP" } else { "DOWN" };
+                        debug!(
+                            market = %market_id,
+                            direction = direction_str,
+                            strength_bps = strength_bps,
+                            "Momentum detected (not trading)"
+                        );
+                    }
+                }
+
+                // EDGE DETECTION: Compare real-time crypto price vs strike vs market odds
+                // Get current crypto price from momentum data
+                let asset_type = match market.asset {
+                    hft_core::CryptoAsset::BTC => CryptoAsset::BTC,
+                    hft_core::CryptoAsset::ETH => CryptoAsset::ETH,
+                };
+                let current_crypto = momenta.iter()
+                    .find(|m| m.asset == asset_type)
+                    .map(|m| m.current_price);
+
+                // Get strike price from our cache
+                let strike = {
+                    let strikes = self.strike_prices.read().await;
+                    strikes.get(market_id).cloned()
+                };
+
+                // Calculate edge if we have both crypto price and strike
+                if let (Some(crypto_price), Some(strike)) = (current_crypto, strike) {
+                    // Calculate how much crypto has moved from strike (in bps)
+                    let price_move_bps = if strike > Decimal::ZERO {
+                        ((crypto_price - strike) / strike * Decimal::from(10000))
+                            .to_string()
+                            .parse::<i32>()
+                            .unwrap_or(0)
+                    } else {
+                        0
+                    };
+
+                    // Determine implied direction and expected probability
+                    // Positive price_move_bps = crypto UP = should buy UP
+                    // Negative price_move_bps = crypto DOWN = should buy DOWN
+                    let crypto_favors_up = price_move_bps > 0;
+                    let price_move_abs = price_move_bps.abs();
+
+                    // Market's current pricing
+                    let market_prob_up = up_price;
+                    let market_prob_down = down_price;
+
+                    // Calculate edge: if crypto is up but UP is underpriced, there's edge
+                    // Simple heuristic: 100bps crypto move should ~= 10% probability shift
+                    let implied_prob_shift = (price_move_abs as f64) / 1000.0; // 100bps = 10%
+
+                    let edge_bps = if crypto_favors_up {
+                        // Crypto up → check if UP is underpriced
+                        // Expected UP prob = 0.5 + implied_shift
+                        let expected_up = 0.5 + implied_prob_shift;
+                        let edge = expected_up - market_prob_up;
+                        (edge * 10000.0) as i32
+                    } else {
+                        // Crypto down → check if DOWN is underpriced
+                        let expected_down = 0.5 + implied_prob_shift;
+                        let edge = expected_down - market_prob_down;
+                        (edge * 10000.0) as i32
+                    };
+
+                    // Log edge calculation for debugging
+                    debug!(
+                        market = %market_id,
+                        crypto_price = %crypto_price,
+                        strike = %strike,
+                        price_move_bps = price_move_bps,
+                        crypto_favors = if crypto_favors_up { "UP" } else { "DOWN" },
+                        edge_bps = edge_bps,
+                        market_up = format!("{:.3}", market_prob_up),
+                        market_down = format!("{:.3}", market_prob_down),
+                        "Edge calculation"
+                    );
+
+                    // Only trade if there's positive edge (>50bps)
+                    if edge_bps >= 50 {
+                        let direction = if crypto_favors_up { hft_core::Direction::Up } else { hft_core::Direction::Down };
+                        let direction_str = if crypto_favors_up { "Up" } else { "Down" };
+                        let entry_price = if crypto_favors_up { up_price } else { down_price };
+
+                        info!(
+                            market = %market_id,
+                            asset = %market.asset,
+                            direction = direction_str,
+                            crypto_price = %crypto_price,
+                            strike = %strike,
+                            price_move_bps = price_move_bps,
+                            market_up = format!("{:.3}", market_prob_up),
+                            market_down = format!("{:.3}", market_prob_down),
+                            edge_bps = edge_bps,
+                            entry_price = format!("{:.3}", entry_price),
+                            time_left_secs = time_left,
+                            "EDGE: Crypto {} {}bps, market pricing {} at {:.3} but should be higher!",
+                            if crypto_favors_up { "UP" } else { "DOWN" },
+                            price_move_abs,
+                            direction_str,
+                            entry_price
+                        );
+
+                        // Execute paper trade
+                        if self.config.paper_mode && !emitted_signal {
+                            let signal = hft_core::LatencySignal {
+                                signal_id: uuid::Uuid::new_v4().to_string(),
+                                asset: market.asset,
+                                direction,
+                                binance_price: crypto_price,
+                                price_change_bps: price_move_bps,
+                                polymarket_price: Decimal::try_from(entry_price).unwrap_or(Decimal::new(50, 2)),
+                                expected_price: Decimal::try_from(entry_price + (edge_bps as f64 / 10000.0)).unwrap_or(Decimal::new(51, 2)),
+                                edge_bps: edge_bps as u32,
+                                confidence: 0.55 + (edge_bps as f64 / 2000.0),
+                                detected_at_ns: 0,
+                                binance_update_ns: 0,
+                                polymarket_update_ns: 0,
+                                latency_ms: 0,
+                            };
+
+                            let position_size = Decimal::ONE;
+                            if let Some(trade) = self.simulator.execute_trade(&signal, &market, position_size) {
+                                self.trades_executed.fetch_add(1, Ordering::Relaxed);
+                                let payout = Decimal::ONE / trade.entry_price;
+                                info!(
+                                    trade_id = %trade.trade_id,
+                                    entry = %trade.entry_price,
+                                    edge_bps = edge_bps,
+                                    payout = format!("{:.2}x", payout),
+                                    "BET: {} {} @ {:.3} with {}bps edge - payout {:.2}x if wins",
+                                    market.asset,
+                                    direction_str,
+                                    trade.entry_price,
+                                    edge_bps,
+                                    payout
+                                );
+                            }
+                        }
+
+                        emitted_signal = true;
+                    }
+                }
+
+                // Update last signal time if we emitted
+                if emitted_signal {
+                    let mut signals = self.last_signal.write().await;
+                    signals.insert(market_id.clone(), std::time::Instant::now());
+                }
+            }
+
             // Periodic debug logging every 10 seconds
             if last_debug_log.elapsed() > Duration::from_secs(10) {
                 last_debug_log = std::time::Instant::now();
@@ -319,24 +655,37 @@ impl CryptoLatencyApp {
                     }
                 }
 
-                // Log orderbook state for our markets (using try_read to avoid blocking)
-                if let Ok(books) = self.orderbooks.try_read() {
-                    for (market_id, orderbook) in books.iter() {
-                        let yes_bid = orderbook.yes_book.best_bid();
-                        let yes_ask = orderbook.yes_book.best_ask();
-                        let age_ms = orderbook.min_age_ms();
-                        if !yes_bid.is_zero() || !yes_ask.is_zero() {
-                            info!(
-                                market = %market_id,
-                                yes_bid = %yes_bid,
-                                yes_ask = %yes_ask,
-                                age_ms = age_ms,
-                                "Orderbook state"
-                            );
-                        } else {
-                            info!(market = %market_id, "Orderbook has no data yet");
-                        }
+                // Log discovery prices and momentum for active markets
+                for market in &all_markets {
+                    if !market.is_active_window() {
+                        continue;
                     }
+                    let market_id = &market.market_id.0;
+                    let up_price = self.discovery.get_market_up_price(market_id);
+                    let down_price = self.discovery.get_market_down_price(market_id);
+                    let momentum = self.discovery.get_market_momentum(market_id);
+                    let velocity = self.discovery.get_market_velocity(market_id);
+                    let time_left = market.time_to_resolution_secs();
+
+                    let momentum_str = match momentum {
+                        Some((up, bps)) => format!("{} {}bps", if up { "UP" } else { "DN" }, bps),
+                        None => "no data".to_string(),
+                    };
+                    let velocity_str = match velocity {
+                        Some(v) => format!("{:.2}/min", v),
+                        None => "-".to_string(),
+                    };
+
+                    info!(
+                        market = %market_id,
+                        asset = %market.asset,
+                        up_price = format!("{:.3}", up_price),
+                        down_price = format!("{:.3}", down_price),
+                        momentum = momentum_str,
+                        velocity = velocity_str,
+                        time_left = time_left,
+                        "Market prices"
+                    );
                 }
 
                 if active_markets == 0 {
@@ -346,7 +695,7 @@ impl CryptoLatencyApp {
                 }
             }
 
-            for momentum in momenta {
+            for momentum in &momenta {
                 // Get active markets for this asset
                 let markets = self.discovery.get_markets_for_asset(match momentum.asset {
                     CryptoAsset::BTC => hft_core::CryptoAsset::BTC,
@@ -411,23 +760,79 @@ impl CryptoLatencyApp {
                 }
             }
 
-            // Check exits for open positions
+            // Check for market resolution and close positions
+            // For 15M markets, we hold until resolution and check if crypto went UP or DOWN
             if self.config.paper_mode {
-                let orderbooks = self.orderbooks.clone();
-                self.simulator.check_exits(
-                    |trade| {
-                        // Get current price from orderbook
-                        tokio::task::block_in_place(|| {
-                            let books = futures::executor::block_on(orderbooks.read());
-                            let ob = books.get(&trade.market_id.0)?;
-                            match trade.direction {
-                                hft_core::Direction::Up => Some(ob.yes_book.best_bid()),
-                                hft_core::Direction::Down => Some(ob.no_book.best_bid()),
-                            }
-                        })
-                    },
-                    &self.exit_config,
-                );
+                let open_positions = self.simulator.get_open_positions();
+                for trade in open_positions {
+                    // Get the market for this trade
+                    if let Some(market) = self.discovery.get_market(&trade.market_id.0) {
+                        // Check if market has ended (resolved)
+                        if market.is_expired() {
+                            // Get current crypto price from momentum data
+                            let asset_type = match market.asset {
+                                hft_core::CryptoAsset::BTC => CryptoAsset::BTC,
+                                hft_core::CryptoAsset::ETH => CryptoAsset::ETH,
+                            };
+                            let crypto_price = momenta.iter()
+                                .find(|m| m.asset == asset_type)
+                                .map(|m| m.current_price)
+                                .unwrap_or(Decimal::ZERO);
+
+                            // Get strike price from our cache
+                            let strike = {
+                                let strikes = self.strike_prices.read().await;
+                                strikes.get(&market.market_id.0).cloned()
+                            };
+
+                            // Determine winner based on crypto price vs strike
+                            // If strike is set, compare against it
+                            // Otherwise use current market prices as heuristic
+                            let up_won = if let Some(strike) = strike {
+                                crypto_price > strike
+                            } else {
+                                // Use market prices as fallback - if up_price > 0.5, UP likely won
+                                let up_price = self.discovery.get_market_up_price(&market.market_id.0);
+                                up_price > 0.5
+                            };
+
+                            // Close position at 1.0 (win) or 0.0 (loss)
+                            let exit_price = if (trade.direction == hft_core::Direction::Up && up_won)
+                                || (trade.direction == hft_core::Direction::Down && !up_won)
+                            {
+                                Decimal::ONE // Winner - resolve at $1
+                            } else {
+                                Decimal::ZERO // Loser - resolve at $0
+                            };
+
+                            let win_str = if exit_price == Decimal::ONE { "WIN" } else { "LOSS" };
+                            let pnl = if exit_price == Decimal::ONE {
+                                // Won: payout is $1, profit = $1 - entry_price
+                                Decimal::ONE - trade.entry_price
+                            } else {
+                                // Lost: lose entire stake
+                                -trade.entry_price
+                            };
+
+                            info!(
+                                trade_id = %trade.trade_id,
+                                asset = %market.asset,
+                                direction = %trade.direction,
+                                entry_price = %trade.entry_price,
+                                up_won = up_won,
+                                crypto_price = %crypto_price,
+                                strike = ?market.strike_price,
+                                pnl = %pnl,
+                                "RESOLUTION: {} bet {} - PnL: ${:.4}",
+                                win_str,
+                                trade.direction,
+                                pnl
+                            );
+
+                            self.simulator.close_position(&trade.trade_id, exit_price);
+                        }
+                    }
+                }
             }
 
             // Small delay to avoid busy loop (1 millisecond)

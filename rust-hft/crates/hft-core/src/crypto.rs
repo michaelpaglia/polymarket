@@ -53,8 +53,10 @@ pub struct CryptoMarket {
     pub up_token_id: TokenId,
     /// Token ID for "Down" outcome
     pub down_token_id: TokenId,
-    /// Strike price (reference price at market start)
+    /// Strike price (reference price at market start) - captured at start_time
     pub strike_price: Option<Decimal>,
+    /// Market start time (when the 15-min window begins - strike is captured here)
+    pub start_time: DateTime<Utc>,
     /// Market end time (resolution time)
     pub end_time: DateTime<Utc>,
     /// When this market was discovered
@@ -67,6 +69,22 @@ impl CryptoMarket {
     /// Get time remaining until resolution (seconds)
     pub fn time_to_resolution_secs(&self) -> i64 {
         (self.end_time - Utc::now()).num_seconds()
+    }
+
+    /// Get time remaining until window starts (seconds)
+    /// Negative if window has already started
+    pub fn time_to_start_secs(&self) -> i64 {
+        (self.start_time - Utc::now()).num_seconds()
+    }
+
+    /// Check if the 15-min window has started
+    pub fn has_started(&self) -> bool {
+        self.time_to_start_secs() <= 0
+    }
+
+    /// Check if we're inside the active window (started but not ended)
+    pub fn is_active_window(&self) -> bool {
+        self.has_started() && !self.is_expired()
     }
 
     /// Check if market is expired
@@ -83,6 +101,11 @@ impl CryptoMarket {
     /// Check if safe to trade (enough time before resolution)
     pub fn is_safe_to_trade(&self, min_secs_before_resolution: i64) -> bool {
         self.time_to_resolution_secs() >= min_secs_before_resolution
+    }
+
+    /// Set the strike price (call when window starts)
+    pub fn set_strike(&mut self, price: Decimal) {
+        self.strike_price = Some(price);
     }
 
     /// Get the token ID for a direction
@@ -316,6 +339,7 @@ mod tests {
             up_token_id: TokenId::new("up"),
             down_token_id: TokenId::new("down"),
             strike_price: Some(dec!(50000)),
+            start_time: Utc::now() - chrono::Duration::minutes(5), // Started 5 min ago
             end_time: Utc::now() + chrono::Duration::minutes(10),
             discovered_at: Utc::now(),
             question: "Will BTC be up?".to_string(),
@@ -324,6 +348,8 @@ mod tests {
         assert!(!market.is_expired());
         assert!(market.is_15min_window());
         assert!(market.is_safe_to_trade(60));
+        assert!(market.has_started());
+        assert!(market.is_active_window());
     }
 
     #[test]
@@ -334,13 +360,15 @@ mod tests {
             up_token_id: TokenId::new("up_token"),
             down_token_id: TokenId::new("down_token"),
             strike_price: None,
-            end_time: Utc::now() + chrono::Duration::minutes(15),
+            start_time: Utc::now() + chrono::Duration::minutes(5), // Starts in 5 min
+            end_time: Utc::now() + chrono::Duration::minutes(20),
             discovered_at: Utc::now(),
             question: "ETH price direction".to_string(),
         };
 
         assert_eq!(market.token_for_direction(Direction::Up).0, "up_token");
         assert_eq!(market.token_for_direction(Direction::Down).0, "down_token");
+        assert!(!market.has_started()); // Not started yet
     }
 
     #[test]
