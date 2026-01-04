@@ -8,6 +8,10 @@ members = [
     "crates/hft-api",
     "crates/hft-metrics",
     "crates/hft-server",
+    "crates/hft-binance",
+    "crates/hft-signal",
+    "crates/hft-simulator",
+    "crates/hft-discovery",
 ]
 
 [workspace.package]
@@ -73,6 +77,15 @@ hft-executor = { path = "crates/hft-executor" }
 hft-risk = { path = "crates/hft-risk" }
 hft-api = { path = "crates/hft-api" }
 hft-metrics = { path = "crates/hft-metrics" }
+hft-binance = { path = "crates/hft-binance" }
+hft-signal = { path = "crates/hft-signal" }
+hft-simulator = { path = "crates/hft-simulator" }
+hft-discovery = { path = "crates/hft-discovery" }
+
+# Additional dependencies for new crates
+url = "2.5"
+regex = "1.10"
+rand = "0.8"
 
 [profile.release]
 opt-level = 3
