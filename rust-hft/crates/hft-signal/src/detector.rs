@@ -5,7 +5,7 @@ use dashmap::DashMap;
 use hft_binance::{CryptoAsset, Direction, PriceMomentum};
 use hft_core::{CryptoMarket, LatencySignal, MarketOrderbook};
 use parking_lot::RwLock;
-use rust_decimal::Decimal;
+use rust_decimal::prelude::*;
 use rust_decimal_macros::dec;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -303,7 +303,7 @@ impl SignalDetector {
     /// Convert to bps
     fn decimal_to_bps(&self, value: Decimal) -> u32 {
         let bps = value * dec!(10000);
-        bps.to_string().parse::<f64>().unwrap_or(0.0) as u32
+        bps.round().to_u32().unwrap_or(0)
     }
 
     /// Convert binance asset to core asset

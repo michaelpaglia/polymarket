@@ -251,7 +251,14 @@ impl CryptoMarketDiscovery {
         }
 
         // Parse event start time (when the 15-min window begins)
-        let start_time_str = market.get("eventStartTime")?.as_str()?;
+        // Skip markets without eventStartTime as they're not valid 15M markets
+        let start_time_str = match market.get("eventStartTime").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => {
+                debug!(slug = %slug, "Skipping market without eventStartTime");
+                return None;
+            }
+        };
         let start_time = DateTime::parse_from_rfc3339(start_time_str)
             .ok()?
             .with_timezone(&Utc);
