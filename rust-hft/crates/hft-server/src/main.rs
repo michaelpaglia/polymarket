@@ -69,15 +69,18 @@ async fn main() -> Result<()> {
     }
 
     // Load configuration
-    let config_path = std::env::var("CONFIG_PATH")
-        .unwrap_or_else(|_| "../../config/default.toml".to_string());
+    let config_path =
+        std::env::var("CONFIG_PATH").unwrap_or_else(|_| "../../config/default.toml".to_string());
 
     let config: AppConfig = Config::builder()
         .add_source(File::with_name(&config_path).required(false))
         .add_source(File::with_name("config/default").required(false))
         .set_default("server.host", "127.0.0.1")?
         .set_default("server.port", 8080)?
-        .set_default("polymarket.ws_url", "wss://ws-subscriptions-clob.polymarket.com/ws/market")?
+        .set_default(
+            "polymarket.ws_url",
+            "wss://ws-subscriptions-clob.polymarket.com/ws/market",
+        )?
         .set_default("polymarket.rest_url", "https://clob.polymarket.com")?
         .set_default("polymarket.chain_id", 137)?
         .set_default("arbitrage.min_spread_bps", 30)?
@@ -105,12 +108,12 @@ async fn main() -> Result<()> {
     }
 
     // Get credentials from environment
-    let private_key = std::env::var("POLYMARKET_PRIVATE_KEY")
-        .expect("POLYMARKET_PRIVATE_KEY must be set");
+    let private_key =
+        std::env::var("POLYMARKET_PRIVATE_KEY").expect("POLYMARKET_PRIVATE_KEY must be set");
 
     // API credentials - use defaults for paper trading if not set
-    let api_key = std::env::var("POLYMARKET_API_KEY")
-        .unwrap_or_else(|_| "paper_trading_key".to_string());
+    let api_key =
+        std::env::var("POLYMARKET_API_KEY").unwrap_or_else(|_| "paper_trading_key".to_string());
     let api_secret = std::env::var("POLYMARKET_API_SECRET")
         .unwrap_or_else(|_| "paper_trading_secret".to_string());
     let api_passphrase = std::env::var("POLYMARKET_API_PASSPHRASE")
@@ -168,7 +171,8 @@ async fn main() -> Result<()> {
     };
 
     // Load proxies from file or environment
-    let proxy_file = std::env::var("HFT_PROXY_FILE").unwrap_or_else(|_| "eu_proxies.txt".to_string());
+    let proxy_file =
+        std::env::var("HFT_PROXY_FILE").unwrap_or_else(|_| "eu_proxies.txt".to_string());
     let ws_client = if std::path::Path::new(&proxy_file).exists() {
         match hft_websocket::ProxyRotator::from_file(&proxy_file) {
             Ok(rotator) => {
@@ -281,10 +285,7 @@ async fn main() -> Result<()> {
 
                                 // Record in circuit breaker
                                 let success = execution.yes_filled && execution.no_filled;
-                                trading_cb.record_trade(
-                                    execution.expected_profit_usd,
-                                    success,
-                                );
+                                trading_cb.record_trade(execution.expected_profit_usd, success);
 
                                 // Record cooldown
                                 trading_detector.record_trade(&opportunity.market_id);

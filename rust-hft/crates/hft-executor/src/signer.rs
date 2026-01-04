@@ -170,7 +170,12 @@ impl OrderSigner {
 
         // Final hash = keccak256("\x19\x01" || domain_separator || struct_hash)
         let final_hash = Keccak256::digest(
-            [&[0x19, 0x01], domain_separator.as_slice(), struct_hash.as_slice()].concat(),
+            [
+                &[0x19, 0x01],
+                domain_separator.as_slice(),
+                struct_hash.as_slice(),
+            ]
+            .concat(),
         );
 
         let mut result = [0u8; 32];
@@ -248,8 +253,7 @@ fn parse_u256(s: &str) -> HftResult<U256> {
         U256::from_str_radix(&s[2..], 16)
             .map_err(|e| HftError::SigningError(format!("Invalid U256: {}", e)))
     } else {
-        U256::from_dec_str(s)
-            .map_err(|e| HftError::SigningError(format!("Invalid U256: {}", e)))
+        U256::from_dec_str(s).map_err(|e| HftError::SigningError(format!("Invalid U256: {}", e)))
     }
 }
 
