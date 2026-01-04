@@ -144,25 +144,27 @@ impl OrderExecutor {
         let no_shares = opportunity.max_size_usd / opportunity.no_price;
 
         // Create and sign orders
-        let yes_order = self.create_signed_order(
-            &opportunity.yes_token_id.0,
-            Side::Buy,
-            opportunity.yes_price,
-            yes_shares,
-        ).await?;
+        let yes_order = self
+            .create_signed_order(
+                &opportunity.yes_token_id.0,
+                Side::Buy,
+                opportunity.yes_price,
+                yes_shares,
+            )
+            .await?;
 
-        let no_order = self.create_signed_order(
-            &opportunity.no_token_id.0,
-            Side::Buy,
-            opportunity.no_price,
-            no_shares,
-        ).await?;
+        let no_order = self
+            .create_signed_order(
+                &opportunity.no_token_id.0,
+                Side::Buy,
+                opportunity.no_price,
+                no_shares,
+            )
+            .await?;
 
         // Submit orders concurrently
-        let (yes_result, no_result) = tokio::join!(
-            self.submit_order(&yes_order),
-            self.submit_order(&no_order),
-        );
+        let (yes_result, no_result) =
+            tokio::join!(self.submit_order(&yes_order), self.submit_order(&no_order),);
 
         let execution_time = start.elapsed();
 
@@ -183,8 +185,10 @@ impl OrderExecutor {
                 "Arbitrage executed successfully"
             );
         } else {
-            self.orders_failed
-                .fetch_add(if yes_filled || no_filled { 1 } else { 2 }, Ordering::Relaxed);
+            self.orders_failed.fetch_add(
+                if yes_filled || no_filled { 1 } else { 2 },
+                Ordering::Relaxed,
+            );
             warn!(
                 execution_id = %execution_id,
                 yes_ok = yes_filled,
@@ -203,8 +207,16 @@ impl OrderExecutor {
             no_order_id: no_result.ok().flatten(),
             yes_filled,
             no_filled,
-            yes_fill_price: if yes_filled { Some(opportunity.yes_price) } else { None },
-            no_fill_price: if no_filled { Some(opportunity.no_price) } else { None },
+            yes_fill_price: if yes_filled {
+                Some(opportunity.yes_price)
+            } else {
+                None
+            },
+            no_fill_price: if no_filled {
+                Some(opportunity.no_price)
+            } else {
+                None
+            },
             total_cost_usd: total_cost,
             expected_profit_usd: expected_profit,
             execution_time_us: execution_time.as_micros() as u64,
@@ -221,13 +233,9 @@ impl OrderExecutor {
         price: Decimal,
         size: Decimal,
     ) -> HftResult<SignedOrder> {
-        let order = self.signer.create_order(
-            token_id,
-            side,
-            price,
-            size,
-            self.config.fee_rate_bps,
-        );
+        let order = self
+            .signer
+            .create_order(token_id, side, price, size, self.config.fee_rate_bps);
 
         self.signer.sign_order(&order).await
     }
@@ -276,7 +284,9 @@ impl OrderExecutor {
             Ok(None)
         } else if status.as_u16() == 429 {
             // Rate limited
-            Err(HftError::RateLimited { retry_after_ms: 1000 })
+            Err(HftError::RateLimited {
+                retry_after_ms: 1000,
+            })
         } else {
             error!(status = %status, body = %body, "Order rejected");
             Err(HftError::OrderRejected {

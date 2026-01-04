@@ -16,17 +16,11 @@ pub enum HftError {
 
     /// Order rejected by CLOB
     #[error("Order rejected: {reason} (code: {code:?})")]
-    OrderRejected {
-        reason: String,
-        code: Option<i32>,
-    },
+    OrderRejected { reason: String, code: Option<i32> },
 
     /// Insufficient liquidity for trade
     #[error("Insufficient liquidity: need {needed} USD, available {available} USD")]
-    InsufficientLiquidity {
-        needed: Decimal,
-        available: Decimal,
-    },
+    InsufficientLiquidity { needed: Decimal, available: Decimal },
 
     /// Rate limited by API
     #[error("Rate limited: retry after {retry_after_ms}ms")]
@@ -91,9 +85,7 @@ impl HftError {
     pub fn should_circuit_break(&self) -> bool {
         matches!(
             self,
-            HftError::CircuitBreaker { .. }
-                | HftError::SigningError(_)
-                | HftError::ConfigError(_)
+            HftError::CircuitBreaker { .. } | HftError::SigningError(_) | HftError::ConfigError(_)
         )
     }
 }

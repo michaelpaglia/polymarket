@@ -87,14 +87,18 @@ impl RiskManager {
             total_exposure: RwLock::new(Decimal::ZERO),
             available_capital: RwLock::new(initial_capital),
             account_balance: RwLock::new(initial_capital * Decimal::TWO), // Assume 50% allocation initially
-            max_balance_percentage: RwLock::new(dec!(0.50)), // 50% default
+            max_balance_percentage: RwLock::new(dec!(0.50)),              // 50% default
             checks_passed: AtomicU64::new(0),
             checks_failed: AtomicU64::new(0),
         }
     }
 
     /// Create with specific balance percentage cap
-    pub fn with_balance_cap(limits: RiskLimits, initial_capital: Decimal, max_percentage: Decimal) -> Self {
+    pub fn with_balance_cap(
+        limits: RiskLimits,
+        initial_capital: Decimal,
+        max_percentage: Decimal,
+    ) -> Self {
         Self {
             limits: RwLock::new(limits),
             positions: DashMap::new(),

@@ -1,6 +1,8 @@
 //! SIMD-accelerated JSON message parser
 
-use crate::messages::{BookLevel, BookMessage, LastTradeMessage, PriceChangeMessage, TickSizeMessage, WsMessage};
+use crate::messages::{
+    BookLevel, BookMessage, LastTradeMessage, PriceChangeMessage, TickSizeMessage, WsMessage,
+};
 use hft_core::HftError;
 use simd_json::prelude::*;
 use tracing::warn;
@@ -41,9 +43,7 @@ fn parse_array_message(text: &str) -> Result<WsMessage, HftError> {
 
     // Process first book message we find
     for value in array {
-        let event_type = value
-            .get("event_type")
-            .and_then(|v| v.as_str());
+        let event_type = value.get("event_type").and_then(|v| v.as_str());
 
         if event_type == Some("book") {
             let asset_id = value
@@ -266,20 +266,20 @@ fn parse_levels(value: Option<&simd_json::OwnedValue>) -> Vec<BookLevel> {
 }
 
 fn parse_price_change(text: &str) -> Result<WsMessage, HftError> {
-    let msg: PriceChangeMessage = serde_json::from_str(text)
-        .map_err(|e| HftError::MessageParse(e.to_string()))?;
+    let msg: PriceChangeMessage =
+        serde_json::from_str(text).map_err(|e| HftError::MessageParse(e.to_string()))?;
     Ok(WsMessage::PriceChange(msg))
 }
 
 fn parse_last_trade(text: &str) -> Result<WsMessage, HftError> {
-    let msg: LastTradeMessage = serde_json::from_str(text)
-        .map_err(|e| HftError::MessageParse(e.to_string()))?;
+    let msg: LastTradeMessage =
+        serde_json::from_str(text).map_err(|e| HftError::MessageParse(e.to_string()))?;
     Ok(WsMessage::LastTrade(msg))
 }
 
 fn parse_tick_size(text: &str) -> Result<WsMessage, HftError> {
-    let msg: TickSizeMessage = serde_json::from_str(text)
-        .map_err(|e| HftError::MessageParse(e.to_string()))?;
+    let msg: TickSizeMessage =
+        serde_json::from_str(text).map_err(|e| HftError::MessageParse(e.to_string()))?;
     Ok(WsMessage::TickSize(msg))
 }
 

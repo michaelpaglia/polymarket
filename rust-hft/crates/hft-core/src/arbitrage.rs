@@ -31,12 +31,12 @@ pub struct ArbitrageConfig {
 impl Default for ArbitrageConfig {
     fn default() -> Self {
         Self {
-            min_spread_bps: 30,                  // 0.30% minimum edge
-            max_price_sum: dec!(0.995),          // YES + NO must be < 0.995
-            min_liquidity_usd: dec!(100),        // $100 min on each side
-            max_position_size_usd: dec!(500),    // $500 max per trade
-            cooldown_us: 100_000,                // 100ms between same-market trades
-            max_data_age_ms: 1000,               // 1 second max data age
+            min_spread_bps: 30,               // 0.30% minimum edge
+            max_price_sum: dec!(0.995),       // YES + NO must be < 0.995
+            min_liquidity_usd: dec!(100),     // $100 min on each side
+            max_position_size_usd: dec!(500), // $500 max per trade
+            cooldown_us: 100_000,             // 100ms between same-market trades
+            max_data_age_ms: 1000,            // 1 second max data age
         }
     }
 }
@@ -104,7 +104,10 @@ impl ArbitrageDetector {
     }
 
     /// Check for arbitrage opportunity on a specific market
-    pub fn check_opportunity(&self, market_id: &MarketId) -> HftResult<Option<ArbitrageOpportunity>> {
+    pub fn check_opportunity(
+        &self,
+        market_id: &MarketId,
+    ) -> HftResult<Option<ArbitrageOpportunity>> {
         let market = self
             .markets
             .get(market_id)
