@@ -481,6 +481,91 @@ impl CryptoLatencyApp {
                     emitted_signal = true;
                 }
 
+                // FLOW SIGNAL: Use orderbook flow imbalance to detect directional pressure
+                // Flow imbalance: -1.0 (selling pressure) to +1.0 (buying pressure)
+                // Velocity: how fast the orderbook mid-price is moving (bps/sec)
+                if !emitted_signal {
+                    let books = self.orderbooks.read().await;
+                    if let Some(orderbook) = books.get(market_id) {
+                        // Get YES book flow metrics (UP token)
+                        let yes_flow = orderbook.yes_book.flow_imbalance();
+                        let yes_velocity = orderbook.yes_book.velocity_bps_per_sec();
+                        let _yes_change = orderbook.yes_book.price_change_bps();
+
+                        // Get NO book flow metrics (DOWN token)
+                        let no_flow = orderbook.no_book.flow_imbalance();
+                        let no_velocity = orderbook.no_book.velocity_bps_per_sec();
+                        let _no_change = orderbook.no_book.price_change_bps();
+
+                        // Get best bid/ask for context
+                        let yes_bid = orderbook.yes_book.best_bid();
+                        let yes_ask = orderbook.yes_book.best_ask();
+                        let no_bid = orderbook.no_book.best_bid();
+                        let no_ask = orderbook.no_book.best_ask();
+
+                        // Get actual book depth from snapshot
+                        let yes_snapshot = orderbook.yes_book.snapshot();
+                        let no_snapshot = orderbook.no_book.snapshot();
+                        let yes_bids_count = yes_snapshot.bids.len();
+                        let yes_asks_count = yes_snapshot.asks.len();
+                        let no_bids_count = no_snapshot.bids.len();
+                        let no_asks_count = no_snapshot.asks.len();
+
+                        // Get actual best bid/ask from snapshot (not atomic cache)
+                        let yes_snapshot_bid = yes_snapshot.best_bid();
+                        let yes_snapshot_ask = yes_snapshot.best_ask();
+
+                        // Log orderbook metrics every 30 seconds (less spam)
+                        if time_left % 30 == 0 {
+                            // Show first 3 bids and asks to see the actual book
+                            let yes_top_bids: Vec<String> = yes_snapshot.bids.iter().take(3).map(|l| format!("{:.2}@{:.0}", l.price, l.size)).collect();
+                            let yes_top_asks: Vec<String> = yes_snapshot.asks.iter().take(3).map(|l| format!("{:.2}@{:.0}", l.price, l.size)).collect();
+
+                            info!(
+                                market = %market_id,
+                                asset = %market.asset,
+                                yes_bids = ?yes_top_bids,
+                                yes_asks = ?yes_top_asks,
+                                yes_depth = format!("{}/{}", yes_bids_count, yes_asks_count),
+                                yes_flow = format!("{:.2}", yes_flow),
+                                time_left = time_left,
+                                "ORDERBOOK: UP bids={:?} asks={:?} depth={}/{}",
+                                yes_top_bids, yes_top_asks, yes_bids_count, yes_asks_count
+                            );
+                        }
+
+                        // FLOW SIGNAL: Strong imbalance suggests directional pressure
+                        // If YES (UP) flow > 0.5, buying pressure on UP token
+                        // If NO (DOWN) flow > 0.5, buying pressure on DOWN token
+                        let flow_threshold = 0.6; // Strong imbalance
+
+                        if yes_flow > flow_threshold && yes_velocity > 10.0 && self.config.paper_mode {
+                            // Strong buying on UP token with upward velocity
+                            info!(
+                                market = %market_id,
+                                asset = %market.asset,
+                                flow = format!("{:.2}", yes_flow),
+                                velocity = format!("{:.1}bps/s", yes_velocity),
+                                "FLOW: Buying pressure on UP (flow={:.2}, velocity={:.1}bps/s)",
+                                yes_flow, yes_velocity
+                            );
+                            // Could execute trade here if we want to add FLOW-based trades
+                        } else if no_flow > flow_threshold && no_velocity > 10.0 && self.config.paper_mode {
+                            // Strong buying on DOWN token with upward velocity
+                            info!(
+                                market = %market_id,
+                                asset = %market.asset,
+                                flow = format!("{:.2}", no_flow),
+                                velocity = format!("{:.1}bps/s", no_velocity),
+                                "FLOW: Buying pressure on DOWN (flow={:.2}, velocity={:.1}bps/s)",
+                                no_flow, no_velocity
+                            );
+                            // Could execute trade here if we want to add FLOW-based trades
+                        }
+                    }
+                    drop(books);
+                }
+
                 // MOMENTUM signal disabled - was creating conflicting bets with TILT
                 // The TILT signal is sufficient for contrarian betting
                 if let Some((up_favored, strength_bps)) = self.discovery.get_market_momentum(market_id) {
