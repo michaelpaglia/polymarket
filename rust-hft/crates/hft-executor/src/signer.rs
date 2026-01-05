@@ -112,9 +112,17 @@ impl OrderSigner {
         // SELL: maker (shares) max 2 decimals, taker (USDC) max 4 decimals
         let (maker_amount, taker_amount) = match side {
             Side::Buy => {
-                // Round UP shares to ensure we meet $1 minimum order size
-                let shares_rounded = size.round_dp_with_strategy(2, RoundingStrategy::AwayFromZero);
-                let usd_amount = price_rounded * shares_rounded;
+                // Calculate shares, ensuring final USD amount >= $1 minimum
+                let mut shares_rounded = size.round_dp_with_strategy(2, RoundingStrategy::AwayFromZero);
+                let mut usd_amount = price_rounded * shares_rounded;
+
+                // If below $1 minimum, add 0.01 shares until we're above
+                let one = Decimal::from(1);
+                while usd_amount < one {
+                    shares_rounded = shares_rounded + Decimal::new(1, 2); // Add 0.01
+                    usd_amount = price_rounded * shares_rounded;
+                }
+
                 (
                     decimal_to_usdc_units(usd_amount, 4),
                     decimal_to_share_units(shares_rounded, 2),
