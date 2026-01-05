@@ -1,35 +1,44 @@
 # 15-Minute Crypto Latency HFT - TODO
 
-## Last Session: 2026-01-05 (Session 7 - Mechanical Trading System)
+## Last Session: 2026-01-05 (Session 8 - FLOW Tuning & P&L Fix)
+
+### Session 8 Progress
+- [x] **Tested 10PM window** - 36 trades, 9 wins, 27 losses (25% win rate)
+- [x] **FLOW threshold increased** - 0.6 → 0.8 (reduce noisy signals)
+- [x] **FLOW rate limit increased** - 60s → 120s (fewer trades)
+- [x] **P&L bug fixed** - Was parsing string with decimals, now uses round().to_i64()
+
+### 10PM Window Results (Before Fixes)
+- BTC: Strike $93,026.60 → Final $92,961.70 = DOWN won
+- ETH: Strike $3,192.32 → Final $3,185.83 = DOWN won
+- **Problem**: FLOW signals flip-flopped, bought too many ETH UP trades
+- **Net P&L**: ~-$6.66 (P&L tracking was bugged, showing $0.00)
+
+### Signal Hierarchy (Updated)
+| Signal | Trigger | Rate Limit | Conviction |
+|--------|---------|------------|------------|
+| COMBO | TILT + FLOW agree | 10s | Highest |
+| TILT | Side < 40% | 30s | Medium |
+| FLOW | flow > 0.8, velocity > 10bps/s | 120s | Lower |
+
+### Key Files Modified This Session
+- `hft-server/src/crypto_latency.rs` - FLOW tuning, P&L fix
+
+### Next Steps
+1. [ ] Test with new FLOW parameters (0.8 threshold, 120s rate limit)
+2. [ ] Consider disabling FLOW entirely if still too noisy
+3. [ ] Focus on TILT-only strategy (worked in Session 5)
+4. [ ] Track win rate over multiple windows
+
+---
+
+## Previous Session: 2026-01-05 (Session 7 - Mechanical Trading System)
 
 ### Session 7 Progress
 - [x] **Mechanical trading system** - Three signal types with different conviction levels
 - [x] **Rate limiting by signal type** - COMBO=10s, TILT=30s, FLOW=60s per market
 - [x] **Session statistics tracking** - Wins/losses/P&L displayed in STATUS logs
 - [x] **STATUS log rate limiting** - Every 30 seconds instead of spamming
-
-### Signal Hierarchy
-| Signal | Trigger | Rate Limit | Conviction |
-|--------|---------|------------|------------|
-| COMBO | TILT + FLOW agree | 10s | Highest |
-| TILT | Side < 40% | 30s | Medium |
-| FLOW | flow > 0.6, velocity > 10bps/s | 60s | Lower |
-
-### Example Output
-```
-SIGNAL: FLOW Down @ 0.505 (edge=666bps, payout=1.98x) market=btc-updown-15m
-TRADE: BTC Down @ 0.5052525 ($1 bet via FLOW)
-STATUS: UP=50.5% DOWN=49.5% (769s left) [0W-0L $0.00] market=btc-updown-15m
-```
-
-### Key Files Modified This Session
-- `hft-server/src/crypto_latency.rs` - Mechanical signal system, rate limiting, session stats
-
-### Next Steps
-1. [ ] Test through a full 15-min window with resolution
-2. [ ] Add position tracking to avoid conflicting trades (UP then DOWN)
-3. [ ] Consider velocity threshold tuning (currently 10bps/s)
-4. [ ] Track actual win rate over multiple sessions
 
 ---
 
