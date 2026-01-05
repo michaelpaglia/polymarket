@@ -10,14 +10,14 @@ use rust_decimal_macros::dec;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 use uuid::Uuid;
 
 /// Get current time in nanoseconds
 fn now_ns() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .expect("system time before UNIX epoch")
         .as_nanos() as u64
 }
 
@@ -197,7 +197,7 @@ impl SignalDetector {
     fn calculate_fair_price(
         &self,
         momentum: &PriceMomentum,
-        market: &CryptoMarket,
+        _market: &CryptoMarket,
         direction: Direction,
     ) -> Decimal {
         // Model: probability moves based on price deviation from strike
@@ -209,9 +209,7 @@ impl SignalDetector {
         // Each bps of price movement shifts probability by sensitivity factor
         let prob_shift = change_bps * self.config.price_sensitivity;
 
-        let prob_up = (self.config.base_probability + prob_shift)
-            .max(0.05)
-            .min(0.95);
+        let prob_up = (self.config.base_probability + prob_shift).clamp(0.05, 0.95);
 
         let fair_price = match direction {
             Direction::Up => prob_up,
@@ -256,7 +254,7 @@ impl SignalDetector {
 
         // 4. Volatility score (high volatility = less confident)
         // 1% volatility = 0 score
-        let volatility_score = (1.0 - momentum.volatility_1min / 0.01).max(0.0).min(1.0);
+        let volatility_score = (1.0 - momentum.volatility_1min / 0.01).clamp(0.0, 1.0);
 
         // Weighted average
         momentum_score * MOMENTUM_WEIGHT
@@ -268,7 +266,6 @@ impl SignalDetector {
     /// Check rate limits and cooldowns
     fn check_rate_limits(&self, asset: CryptoAsset) -> bool {
         let now = now_ns();
-        let now_ms = now / 1_000_000;
 
         // Check asset cooldown
         if let Some(last) = self.last_signal_time.get(&asset) {

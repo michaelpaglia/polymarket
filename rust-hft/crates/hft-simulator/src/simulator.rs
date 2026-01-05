@@ -9,7 +9,7 @@ use rand::Rng;
 use rust_decimal::prelude::*;
 use rust_decimal_macros::dec;
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 use uuid::Uuid;
 
 /// Simulated order status
@@ -208,7 +208,9 @@ impl PaperTradeSimulator {
 
         // Calculate P&L in bps
         let pnl_bps = if !trade.size_usd.is_zero() {
-            ((net_pnl / trade.size_usd) * dec!(10000)).to_i32().unwrap_or(0)
+            ((net_pnl / trade.size_usd) * dec!(10000))
+                .to_i32()
+                .unwrap_or(0)
         } else {
             0
         };

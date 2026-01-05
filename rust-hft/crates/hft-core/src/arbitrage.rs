@@ -258,8 +258,8 @@ impl ArbitrageDetector {
     fn calculate_max_size(
         &self,
         market: &MarketOrderbook,
-        yes_price: Decimal,
-        no_price: Decimal,
+        _yes_price: Decimal,
+        _no_price: Decimal,
     ) -> Decimal {
         // Get orderbook depths
         let yes_snap = market.yes_book.snapshot();
@@ -306,7 +306,7 @@ impl ArbitrageDetector {
     fn now_ns() -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("system time before UNIX epoch")
             .as_nanos() as u64
     }
 }

@@ -183,9 +183,9 @@ fn detect_event_type(text: &str) -> Option<String> {
         let rest = &text[start + 13..]; // Skip past "event_type":"
         if let Some(colon) = rest.find(':') {
             let after_colon = rest[colon + 1..].trim_start();
-            if after_colon.starts_with('"') {
-                if let Some(end) = after_colon[1..].find('"') {
-                    return Some(after_colon[1..end + 1].to_string());
+            if let Some(stripped) = after_colon.strip_prefix('"') {
+                if let Some(end) = stripped.find('"') {
+                    return Some(stripped[..end].to_string());
                 }
             }
         }
@@ -216,7 +216,11 @@ fn detect_event_type(text: &str) -> Option<String> {
     }
 
     // Also check for simpler format without all fields (still a trade if it has market + price)
-    if text.contains("\"market\"") && has_price && !text.contains("\"bids\"") && !text.contains("\"asks\"") {
+    if text.contains("\"market\"")
+        && has_price
+        && !text.contains("\"bids\"")
+        && !text.contains("\"asks\"")
+    {
         return Some("trade_notification".to_string());
     }
 
@@ -226,7 +230,11 @@ fn detect_event_type(text: &str) -> Option<String> {
     }
 
     // Catch any message with market + asset_id that isn't a book (likely trade-related)
-    if text.contains("\"market\"") && has_asset && !text.contains("\"bids\"") && !text.contains("\"asks\"") {
+    if text.contains("\"market\"")
+        && has_asset
+        && !text.contains("\"bids\"")
+        && !text.contains("\"asks\"")
+    {
         return Some("trade_notification".to_string());
     }
 

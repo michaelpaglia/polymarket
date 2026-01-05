@@ -134,21 +134,16 @@ pub enum OrderType {
 }
 
 /// Trading state
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TradingState {
+    #[default]
     Stopped,
     Starting,
     Running,
     Paused,
     Stopping,
     Error,
-}
-
-impl Default for TradingState {
-    fn default() -> Self {
-        Self::Stopped
-    }
 }
 
 /// Arbitrage opportunity detected
@@ -188,7 +183,7 @@ impl ArbitrageOpportunity {
     pub fn is_valid(&self, max_age_ms: u64) -> bool {
         let now_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("system time before UNIX epoch")
             .as_nanos() as u64;
         let age_ms = (now_ns - self.detected_at_ns) / 1_000_000;
         age_ms < max_age_ms

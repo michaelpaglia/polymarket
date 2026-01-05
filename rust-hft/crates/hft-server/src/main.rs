@@ -54,6 +54,7 @@ struct RiskSettings {
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
+#[allow(dead_code)]
 struct MetricsConfig {
     prometheus_port: u16,
     log_level: String,
@@ -63,7 +64,7 @@ struct MetricsConfig {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Load environment variables from .env file in project root
-    if let Err(_) = dotenvy::dotenv() {
+    if dotenvy::dotenv().is_err() {
         // Try loading from parent directories
         let _ = dotenvy::from_filename("../../.env");
     }

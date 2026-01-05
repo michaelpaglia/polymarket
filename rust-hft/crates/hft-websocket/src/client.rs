@@ -159,7 +159,14 @@ async fn connect_via_proxy(
     if let (Some(user), Some(pass)) = (&proxy.username, &proxy.password) {
         let credentials = format!("{}:{}", user, pass);
         let encoded = base64::engine::general_purpose::STANDARD.encode(credentials.as_bytes());
+        debug!(user = %user, pass_len = pass.len(), "Adding proxy auth");
         connect_request.push_str(&format!("Proxy-Authorization: Basic {}\r\n", encoded));
+    } else {
+        warn!(
+            "No proxy credentials found! user={:?} pass={:?}",
+            proxy.username.is_some(),
+            proxy.password.is_some()
+        );
     }
 
     connect_request.push_str("\r\n");
@@ -372,6 +379,8 @@ impl WebSocketClient {
                     info!(
                         proxy_host = %p.host,
                         proxy_port = p.port,
+                        has_user = p.username.is_some(),
+                        has_pass = p.password.is_some(),
                         "Using proxy for connection"
                     );
                 }

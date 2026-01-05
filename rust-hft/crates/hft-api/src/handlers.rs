@@ -119,7 +119,7 @@ pub async fn set_capital(
 
     // Update limits if provided
     if req.max_position_size_usd.is_some() || req.max_exposure_usd.is_some() {
-        let current = state.risk_manager.stats();
+        let _current = state.risk_manager.stats();
         let mut limits = RiskLimits::default();
 
         if let Some(max_pos) = req.max_position_size_usd {

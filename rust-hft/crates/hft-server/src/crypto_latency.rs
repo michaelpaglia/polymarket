@@ -4,15 +4,15 @@
 //! when Binance price moves before Polymarket orderbook catches up.
 
 use anyhow::Result;
-use hft_binance::{BinanceConfig, CoinbaseConfig, KrakenConfig, CryptoAsset, PriceFeed};
-use hft_core::{CryptoLatencyConfig, MarketOrderbook, TradingState};
+use hft_binance::{BinanceConfig, CoinbaseConfig, CryptoAsset, KrakenConfig, PriceFeed};
+use hft_core::{CryptoLatencyConfig, MarketOrderbook, Side, TradingState};
 use hft_discovery::{CryptoMarketDiscovery, DiscoveryConfig};
-use hft_executor::PositionRedeemer;
+use hft_executor::{ExecutorConfig, OrderExecutor, PositionRedeemer};
 use hft_signal::{SignalConfig, SignalDetector};
 use hft_simulator::{ExitConfig, PaperTradeSimulator, SimulatorConfig};
 use hft_websocket::{WebSocketClient, WebSocketConfig};
-use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::Decimal;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -34,7 +34,10 @@ pub struct CryptoLatencyApp {
     detector: Arc<SignalDetector>,
     /// Paper trade simulator
     simulator: Arc<PaperTradeSimulator>,
+    /// Live order executor (None if paper mode)
+    executor: Option<Arc<OrderExecutor>>,
     /// Exit configuration
+    #[allow(dead_code)]
     exit_config: ExitConfig,
     /// Trading state
     state: Arc<RwLock<TradingState>>,
@@ -55,6 +58,20 @@ pub struct CryptoLatencyApp {
     last_status_log: Arc<RwLock<HashMap<String, std::time::Instant>>>,
     /// Strike prices by market ID (captured when window starts)
     strike_prices: Arc<RwLock<HashMap<String, Decimal>>>,
+    /// Live positions tracking (trade_id -> (token_id, direction, entry_price, size))
+    live_positions: Arc<RwLock<HashMap<String, LivePosition>>>,
+}
+
+/// A live position for tracking
+#[derive(Debug, Clone)]
+pub struct LivePosition {
+    pub trade_id: String,
+    pub market_id: String,
+    pub token_id: String,
+    pub direction: hft_core::Direction,
+    pub entry_price: Decimal,
+    pub size_usd: Decimal,
+    pub asset: hft_core::CryptoAsset,
 }
 
 impl CryptoLatencyApp {
@@ -66,6 +83,7 @@ impl CryptoLatencyApp {
         discovery_config: DiscoveryConfig,
         price_feed: Arc<PriceFeed>,
         polymarket: Arc<WebSocketClient>,
+        executor: Option<Arc<OrderExecutor>>,
     ) -> Self {
         let exit_config = ExitConfig {
             take_profit_bps: config.take_profit_bps,
@@ -80,6 +98,7 @@ impl CryptoLatencyApp {
             discovery: Arc::new(CryptoMarketDiscovery::new(discovery_config)),
             detector: Arc::new(SignalDetector::new(signal_config)),
             simulator: Arc::new(PaperTradeSimulator::new(simulator_config)),
+            executor,
             exit_config,
             state: Arc::new(RwLock::new(TradingState::Stopped)),
             running: Arc::new(AtomicBool::new(false)),
@@ -92,6 +111,7 @@ impl CryptoLatencyApp {
             last_signal: Arc::new(RwLock::new(HashMap::new())),
             last_status_log: Arc::new(RwLock::new(HashMap::new())),
             strike_prices: Arc::new(RwLock::new(HashMap::new())),
+            live_positions: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -111,6 +131,7 @@ impl CryptoLatencyApp {
             discovery_config,
             Arc::new(PriceFeed::binance(binance_config)),
             Arc::new(WebSocketClient::new(polymarket_config)),
+            None,
         )
     }
 
@@ -130,6 +151,7 @@ impl CryptoLatencyApp {
             discovery_config,
             Arc::new(PriceFeed::coinbase(coinbase_config)),
             Arc::new(WebSocketClient::new(polymarket_config)),
+            None,
         )
     }
 
@@ -380,7 +402,11 @@ impl CryptoLatencyApp {
                             hft_core::CryptoAsset::BTC => CryptoAsset::BTC,
                             hft_core::CryptoAsset::ETH => CryptoAsset::ETH,
                         };
-                        if let Some(price) = momenta.iter().find(|m| m.asset == asset_type).map(|m| m.current_price) {
+                        if let Some(price) = momenta
+                            .iter()
+                            .find(|m| m.asset == asset_type)
+                            .map(|m| m.current_price)
+                        {
                             let mut strikes = self.strike_prices.write().await;
                             strikes.insert(market_id.clone(), price);
                             let time_left = market.time_to_resolution_secs();
@@ -460,7 +486,7 @@ impl CryptoLatencyApp {
 
                 // Detect signal conditions
                 let tilt_threshold = 0.40;
-                let flow_threshold = 0.8;  // Increased from 0.6 to reduce noise
+                let flow_threshold = 0.8; // Increased from 0.6 to reduce noise
                 let velocity_threshold = 10.0;
 
                 let tilt_up = up_price < tilt_threshold;
@@ -500,21 +526,22 @@ impl CryptoLatencyApp {
 
                 // Rate limit signals by type (COMBO=10s, TILT=30s, FLOW=120s)
                 let rate_limit_secs = match signal_type {
-                    "COMBO" => 10,   // High conviction, allow more frequent
-                    "TILT" => 30,    // Moderate conviction
-                    "FLOW" => 120,   // Low conviction, increased from 60s to reduce noise
+                    "COMBO" => 10, // High conviction, allow more frequent
+                    "TILT" => 30,  // Moderate conviction
+                    "FLOW" => 120, // Low conviction, increased from 60s to reduce noise
                     _ => 30,
                 };
 
                 let can_trade = {
                     let signals = self.last_signal.read().await;
-                    signals.get(market_id)
+                    signals
+                        .get(market_id)
                         .map(|t| t.elapsed() > Duration::from_secs(rate_limit_secs))
                         .unwrap_or(true)
                 };
 
                 // Execute trade if signal detected and rate limit allows
-                if should_trade && can_trade && self.config.paper_mode {
+                if should_trade && can_trade {
                     let direction_str = match direction {
                         hft_core::Direction::Up => "Up",
                         hft_core::Direction::Down => "Down",
@@ -532,46 +559,131 @@ impl CryptoLatencyApp {
                         flow_up = format!("{:.2}", yes_flow),
                         flow_down = format!("{:.2}", no_flow),
                         time_left = time_left,
-                        "SIGNAL: {} {} @ {:.3} (edge={}bps, payout={:.2}x)",
-                        signal_type, direction_str, entry_price, edge_bps, payout_if_wins
+                        live = !self.config.paper_mode,
+                        "SIGNAL: {} {} @ {:.3} (edge={}bps, payout={:.2}x) [{}]",
+                        signal_type, direction_str, entry_price, edge_bps, payout_if_wins,
+                        if self.config.paper_mode { "PAPER" } else { "LIVE" }
                     );
 
-                    let signal = hft_core::LatencySignal {
-                        signal_id: uuid::Uuid::new_v4().to_string(),
-                        asset: market.asset,
-                        direction,
-                        binance_price: Decimal::ZERO,
-                        price_change_bps: edge_bps as i32,
-                        polymarket_price: Decimal::try_from(entry_price).unwrap_or(Decimal::new(50, 2)),
-                        expected_price: Decimal::try_from(entry_price + 0.02).unwrap_or(Decimal::new(52, 2)),
-                        edge_bps,
-                        confidence: if signal_type == "COMBO" { 0.70 } else { 0.55 },
-                        detected_at_ns: 0,
-                        binance_update_ns: 0,
-                        polymarket_update_ns: 0,
-                        latency_ms: 0,
+                    // Get token ID for the direction we want to buy
+                    let token_id = match direction {
+                        hft_core::Direction::Up => market.up_token_id.0.clone(),
+                        hft_core::Direction::Down => market.down_token_id.0.clone(),
                     };
 
-                    let position_size = Decimal::ONE;
-                    if let Some(trade) = self.simulator.execute_trade(&signal, &market, position_size) {
-                        self.trades_executed.fetch_add(1, Ordering::Relaxed);
+                    let position_size = self.config.position_size_usd;
+                    let entry_price_decimal =
+                        Decimal::try_from(entry_price).unwrap_or(Decimal::new(50, 2));
+
+                    if self.config.paper_mode {
+                        // Paper trading - use simulator
+                        let signal = hft_core::LatencySignal {
+                            signal_id: uuid::Uuid::new_v4().to_string(),
+                            asset: market.asset,
+                            direction,
+                            binance_price: Decimal::ZERO,
+                            price_change_bps: edge_bps as i32,
+                            polymarket_price: entry_price_decimal,
+                            expected_price: Decimal::try_from(entry_price + 0.02)
+                                .unwrap_or(Decimal::new(52, 2)),
+                            edge_bps,
+                            confidence: if signal_type == "COMBO" { 0.70 } else { 0.55 },
+                            detected_at_ns: 0,
+                            binance_update_ns: 0,
+                            polymarket_update_ns: 0,
+                            latency_ms: 0,
+                        };
+
+                        if let Some(trade) =
+                            self.simulator.execute_trade(&signal, market, position_size)
+                        {
+                            self.trades_executed.fetch_add(1, Ordering::Relaxed);
+                            info!(
+                                trade_id = %trade.trade_id,
+                                signal = signal_type,
+                                "PAPER TRADE: {} {} @ {} ($1 bet via {})",
+                                market.asset, direction_str, trade.entry_price, signal_type
+                            );
+
+                            // Update last signal time
+                            let mut signals = self.last_signal.write().await;
+                            signals.insert(market_id.clone(), std::time::Instant::now());
+                        }
+                    } else if let Some(executor) = &self.executor {
+                        // LIVE trading - place real order
+                        let trade_id = uuid::Uuid::new_v4().to_string();
+                        let shares = position_size / entry_price_decimal;
+
                         info!(
-                            trade_id = %trade.trade_id,
-                            signal = signal_type,
-                            "TRADE: {} {} @ {} ($1 bet via {})",
-                            market.asset, direction_str, trade.entry_price, signal_type
+                            trade_id = %trade_id,
+                            token_id = %token_id,
+                            side = "BUY",
+                            price = %entry_price_decimal,
+                            shares = %shares,
+                            "LIVE ORDER: Placing order..."
                         );
 
-                        // Update last signal time
+                        // Create signed order using the executor's signer
+                        match executor
+                            .create_and_submit_order(
+                                &token_id,
+                                Side::Buy,
+                                entry_price_decimal,
+                                shares,
+                            )
+                            .await
+                        {
+                            Ok(Some(order_id)) => {
+                                self.trades_executed.fetch_add(1, Ordering::Relaxed);
+                                info!(
+                                    trade_id = %trade_id,
+                                    order_id = %order_id,
+                                    signal = signal_type,
+                                    "LIVE TRADE: {} {} @ {} (${} via {})",
+                                    market.asset, direction_str, entry_price_decimal, position_size, signal_type
+                                );
+
+                                // Track live position for resolution
+                                let live_pos = LivePosition {
+                                    trade_id: trade_id.clone(),
+                                    market_id: market_id.clone(),
+                                    token_id: token_id.clone(),
+                                    direction,
+                                    entry_price: entry_price_decimal,
+                                    size_usd: position_size,
+                                    asset: market.asset,
+                                };
+                                let mut positions = self.live_positions.write().await;
+                                positions.insert(trade_id, live_pos);
+                            }
+                            Ok(None) => {
+                                warn!(
+                                    trade_id = %trade_id,
+                                    "LIVE ORDER: No order ID returned"
+                                );
+                            }
+                            Err(e) => {
+                                error!(
+                                    trade_id = %trade_id,
+                                    error = %e,
+                                    "LIVE ORDER FAILED: {}", e
+                                );
+                            }
+                        }
+
+                        // Update last signal time even on failure (avoid rapid retries)
                         let mut signals = self.last_signal.write().await;
                         signals.insert(market_id.clone(), std::time::Instant::now());
+                    } else {
+                        warn!("Live mode enabled but no executor configured!");
                     }
                 }
 
                 // Log orderbook status every 30 seconds (rate limited properly)
                 let should_log_status = {
                     let status_logs = self.last_status_log.read().await;
-                    status_logs.get(market_id)
+                    status_logs
+                        .get(market_id)
                         .map(|t| t.elapsed() > Duration::from_secs(30))
                         .unwrap_or(true)
                 };
@@ -585,13 +697,25 @@ impl CryptoLatencyApp {
                     let books = self.orderbooks.read().await;
                     if let Some(orderbook) = books.get(market_id) {
                         let yes_snapshot = orderbook.yes_book.snapshot();
-                        let yes_bids: Vec<String> = yes_snapshot.bids.iter().take(2).map(|l| format!("{:.2}", l.price)).collect();
-                        let yes_asks: Vec<String> = yes_snapshot.asks.iter().take(2).map(|l| format!("{:.2}", l.price)).collect();
+                        let yes_bids: Vec<String> = yes_snapshot
+                            .bids
+                            .iter()
+                            .take(2)
+                            .map(|l| format!("{:.2}", l.price))
+                            .collect();
+                        let yes_asks: Vec<String> = yes_snapshot
+                            .asks
+                            .iter()
+                            .take(2)
+                            .map(|l| format!("{:.2}", l.price))
+                            .collect();
 
                         // Get session stats
                         let wins = self.session_wins.load(Ordering::Relaxed);
                         let losses = self.session_losses.load(Ordering::Relaxed);
-                        let pnl_cents = self.session_pnl_cents.load(std::sync::atomic::Ordering::Relaxed);
+                        let pnl_cents = self
+                            .session_pnl_cents
+                            .load(std::sync::atomic::Ordering::Relaxed);
 
                         info!(
                             market = %market_id,
@@ -693,8 +817,7 @@ impl CryptoLatencyApp {
                     drop(books);
 
                     // Detect signal
-                    if let Some(signal) =
-                        self.detector.detect_signal(&momentum, &orderbook, &market)
+                    if let Some(signal) = self.detector.detect_signal(momentum, &orderbook, &market)
                     {
                         self.signals_detected.fetch_add(1, Ordering::Relaxed);
 
@@ -750,7 +873,8 @@ impl CryptoLatencyApp {
                                 hft_core::CryptoAsset::BTC => CryptoAsset::BTC,
                                 hft_core::CryptoAsset::ETH => CryptoAsset::ETH,
                             };
-                            let crypto_price = momenta.iter()
+                            let crypto_price = momenta
+                                .iter()
                                 .find(|m| m.asset == asset_type)
                                 .map(|m| m.current_price)
                                 .unwrap_or(Decimal::ZERO);
@@ -768,12 +892,14 @@ impl CryptoLatencyApp {
                                 crypto_price > strike
                             } else {
                                 // Use market prices as fallback - if up_price > 0.5, UP likely won
-                                let up_price = self.discovery.get_market_up_price(&market.market_id.0);
+                                let up_price =
+                                    self.discovery.get_market_up_price(&market.market_id.0);
                                 up_price > 0.5
                             };
 
                             // Close position at 1.0 (win) or 0.0 (loss)
-                            let exit_price = if (trade.direction == hft_core::Direction::Up && up_won)
+                            let exit_price = if (trade.direction == hft_core::Direction::Up
+                                && up_won)
                                 || (trade.direction == hft_core::Direction::Down && !up_won)
                             {
                                 Decimal::ONE // Winner - resolve at $1
@@ -781,7 +907,11 @@ impl CryptoLatencyApp {
                                 Decimal::ZERO // Loser - resolve at $0
                             };
 
-                            let win_str = if exit_price == Decimal::ONE { "WIN" } else { "LOSS" };
+                            let win_str = if exit_price == Decimal::ONE {
+                                "WIN"
+                            } else {
+                                "LOSS"
+                            };
                             let pnl = if exit_price == Decimal::ONE {
                                 // Won: payout is $1, profit = $1 - entry_price
                                 Decimal::ONE - trade.entry_price
@@ -799,13 +929,17 @@ impl CryptoLatencyApp {
 
                             // Update P&L (in cents to avoid float atomics)
                             // Use round() then to_i64() instead of string parsing (which fails on decimals)
-                            let pnl_cents = (pnl * Decimal::from(100)).round().to_i64().unwrap_or(0);
-                            self.session_pnl_cents.fetch_add(pnl_cents, std::sync::atomic::Ordering::Relaxed);
+                            let pnl_cents =
+                                (pnl * Decimal::from(100)).round().to_i64().unwrap_or(0);
+                            self.session_pnl_cents
+                                .fetch_add(pnl_cents, std::sync::atomic::Ordering::Relaxed);
 
                             // Get current session stats for logging
                             let wins = self.session_wins.load(Ordering::Relaxed);
                             let losses = self.session_losses.load(Ordering::Relaxed);
-                            let total_pnl_cents = self.session_pnl_cents.load(std::sync::atomic::Ordering::Relaxed);
+                            let total_pnl_cents = self
+                                .session_pnl_cents
+                                .load(std::sync::atomic::Ordering::Relaxed);
                             let total_pnl = total_pnl_cents as f64 / 100.0;
                             let win_rate = if wins + losses > 0 {
                                 (wins as f64 / (wins + losses) as f64) * 100.0
@@ -842,7 +976,9 @@ impl CryptoLatencyApp {
                 let wins = self.session_wins.load(Ordering::Relaxed);
                 let losses = self.session_losses.load(Ordering::Relaxed);
                 if (wins + losses > 0) && (last_debug_log.elapsed() > Duration::from_secs(60)) {
-                    let total_pnl_cents = self.session_pnl_cents.load(std::sync::atomic::Ordering::Relaxed);
+                    let total_pnl_cents = self
+                        .session_pnl_cents
+                        .load(std::sync::atomic::Ordering::Relaxed);
                     let total_pnl = total_pnl_cents as f64 / 100.0;
                     let win_rate = (wins as f64 / (wins + losses) as f64) * 100.0;
                     let trades = self.trades_executed.load(Ordering::Relaxed);
@@ -854,7 +990,11 @@ impl CryptoLatencyApp {
                         win_rate = format!("{:.1}%", win_rate),
                         pnl = format!("${:.2}", total_pnl),
                         "=== SESSION STATS: {} trades, {}/{} wins ({:.1}%), ${:.2} P&L ===",
-                        trades, wins, losses, win_rate, total_pnl
+                        trades,
+                        wins,
+                        losses,
+                        win_rate,
+                        total_pnl
                     );
                 }
             }
@@ -924,7 +1064,7 @@ pub struct CryptoLatencyStats {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Load environment variables
-    if let Err(_) = dotenvy::dotenv() {
+    if dotenvy::dotenv().is_err() {
         let _ = dotenvy::from_filename("../../.env");
     }
 
@@ -943,7 +1083,35 @@ async fn main() -> Result<()> {
     info!("=================================================");
 
     // Load configuration
-    let config = CryptoLatencyConfig::default();
+    let mut config = CryptoLatencyConfig::default();
+
+    // Check for live trading mode
+    // LIVE_TRADING=1 or PAPER_MODE=0 enables live trading
+    let live_trading = std::env::var("LIVE_TRADING")
+        .map(|v| v == "1" || v.to_lowercase() == "true")
+        .unwrap_or(false)
+        || std::env::var("PAPER_MODE")
+            .map(|v| v == "0" || v.to_lowercase() == "false")
+            .unwrap_or(false);
+
+    // Position size from env var (default $1 for safety)
+    if let Ok(size_str) = std::env::var("POSITION_SIZE_USD") {
+        if let Ok(size) = size_str.parse::<i64>() {
+            config.position_size_usd = Decimal::from(size);
+            info!("Position size: ${}", size);
+        }
+    } else {
+        config.position_size_usd = Decimal::ONE; // Safe default for testing
+        info!("Position size: $1 (default, set POSITION_SIZE_USD to change)");
+    }
+
+    if live_trading {
+        config.paper_mode = false;
+        info!("🔴 LIVE TRADING MODE ENABLED - Real money at risk!");
+        info!("   Position size: ${}", config.position_size_usd);
+    } else {
+        info!("📝 Paper trading mode (set LIVE_TRADING=1 for real trades)");
+    }
 
     // Use aggressive signal config if AGGRESSIVE_MODE=1
     let aggressive_mode = std::env::var("AGGRESSIVE_MODE")
@@ -1018,6 +1186,39 @@ async fn main() -> Result<()> {
         Arc::new(WebSocketClient::new(WebSocketConfig::default()))
     };
 
+    // Create order executor for live trading
+    let executor: Option<Arc<OrderExecutor>> = if live_trading {
+        // Get private key from environment
+        let private_key = std::env::var("POLYMARKET_PRIVATE_KEY")
+            .or_else(|_| std::env::var("POLYGON_PRIVATE_KEY"))
+            .expect("POLYMARKET_PRIVATE_KEY or POLYGON_PRIVATE_KEY required for live trading");
+
+        info!("Deriving API credentials from private key...");
+
+        // Derive credentials automatically (like Python py_clob_client)
+        match OrderExecutor::new_with_derived_creds(
+            ExecutorConfig::default(),
+            &private_key,
+            137, // Polygon mainnet
+        )
+        .await
+        {
+            Ok(executor) => {
+                info!(
+                    wallet = %executor.address(),
+                    "Live order executor initialized with derived credentials"
+                );
+                Some(Arc::new(executor))
+            }
+            Err(e) => {
+                error!(error = %e, "Failed to create order executor");
+                panic!("Cannot start live trading without executor: {}", e);
+            }
+        }
+    } else {
+        None
+    };
+
     let app = Arc::new(CryptoLatencyApp::new_with_clients(
         config,
         signal_config,
@@ -1025,6 +1226,7 @@ async fn main() -> Result<()> {
         discovery_config,
         price_feed,
         polymarket_client,
+        executor,
     ));
 
     // Start stats printer with detailed momentum logging

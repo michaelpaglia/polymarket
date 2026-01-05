@@ -3,15 +3,15 @@
 use crate::signer::{OrderSigner, SignedOrder};
 use chrono::Utc;
 use dashmap::DashMap;
+use ethers::signers::{LocalWallet, Signer};
 use hft_core::{
-    ArbitrageExecution, ArbitrageOpportunity, ExecutionStatus, HftError, HftResult, OrderType, Side,
+    ArbitrageExecution, ArbitrageOpportunity, ExecutionStatus, HftError, HftResult, Side,
 };
 use reqwest::Client;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -70,6 +70,7 @@ pub struct OrderStatus {
 
 /// Pending order tracking
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct PendingOrder {
     order_id: String,
     token_id: String,
@@ -89,8 +90,129 @@ pub struct OrderExecutor {
     orders_failed: AtomicU64,
 }
 
+/// Response from derive API credentials endpoint
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeriveCredsResponse {
+    api_key: String,
+    secret: String,
+    passphrase: String,
+}
+
 impl OrderExecutor {
-    /// Create new order executor
+    /// Create new order executor with auto-derived credentials (like Python py_clob_client)
+    pub async fn new_with_derived_creds(
+        config: ExecutorConfig,
+        private_key: &str,
+        chain_id: u64,
+    ) -> HftResult<Self> {
+        let signer = OrderSigner::new(private_key, chain_id)?;
+
+        // Derive credentials from private key (like Python's create_or_derive_api_creds)
+        let credentials = Self::derive_api_credentials(&config.clob_url, private_key).await?;
+
+        let http_client = Client::builder()
+            .timeout(std::time::Duration::from_millis(config.order_timeout_ms))
+            .tcp_nodelay(true)
+            .build()
+            .map_err(|e| HftError::Internal(e.to_string()))?;
+
+        info!(
+            address = %signer.address_hex(),
+            "Order executor initialized with derived credentials"
+        );
+
+        Ok(Self {
+            config,
+            signer,
+            credentials,
+            http_client,
+            pending_orders: DashMap::new(),
+            orders_submitted: AtomicU64::new(0),
+            orders_filled: AtomicU64::new(0),
+            orders_failed: AtomicU64::new(0),
+        })
+    }
+
+    /// Derive API credentials from private key (matches py_clob_client behavior)
+    async fn derive_api_credentials(
+        clob_url: &str,
+        private_key: &str,
+    ) -> HftResult<ApiCredentials> {
+        let wallet: LocalWallet = private_key
+            .parse()
+            .map_err(|e| HftError::SigningError(format!("Invalid private key: {}", e)))?;
+
+        let address = format!("{:?}", wallet.address());
+
+        // Create timestamp for signing
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before UNIX epoch")
+            .as_secs();
+
+        // Message to sign (Polymarket CLOB format)
+        let message = format!("I want to derive my API credentials at {}", timestamp);
+
+        // Sign the message
+        let signature = wallet
+            .sign_message(&message)
+            .await
+            .map_err(|e| HftError::SigningError(format!("Failed to sign: {}", e)))?;
+
+        let sig_hex = format!("0x{}", hex::encode(signature.to_vec()));
+
+        // Call derive endpoint
+        let client = Client::new();
+        let url = format!("{}/auth/derive-api-key", clob_url);
+
+        #[derive(Serialize)]
+        struct DeriveRequest {
+            message: String,
+            timestamp: u64,
+            signature: String,
+        }
+
+        let response = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&DeriveRequest {
+                message,
+                timestamp,
+                signature: sig_hex,
+            })
+            .send()
+            .await
+            .map_err(|e| HftError::HttpError(format!("Derive creds request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(HftError::HttpError(format!(
+                "Derive creds failed ({}): {}",
+                status, body
+            )));
+        }
+
+        let creds: DeriveCredsResponse = response
+            .json()
+            .await
+            .map_err(|e| HftError::Internal(format!("Failed to parse credentials: {}", e)))?;
+
+        info!(
+            address = %address,
+            api_key_prefix = &creds.api_key[..8.min(creds.api_key.len())],
+            "API credentials derived successfully"
+        );
+
+        Ok(ApiCredentials {
+            api_key: creds.api_key,
+            api_secret: creds.secret,
+            api_passphrase: creds.passphrase,
+        })
+    }
+
+    /// Create new order executor with explicit credentials
     pub fn new(
         config: ExecutorConfig,
         private_key: &str,
@@ -357,6 +479,20 @@ impl OrderExecutor {
             orders_failed: self.orders_failed.load(Ordering::Relaxed),
             pending_count: self.pending_orders.len(),
         }
+    }
+
+    /// Create and submit a single order (convenience method for crypto latency trading)
+    pub async fn create_and_submit_order(
+        &self,
+        token_id: &str,
+        side: Side,
+        price: Decimal,
+        size: Decimal,
+    ) -> HftResult<Option<String>> {
+        let signed_order = self
+            .create_signed_order(token_id, side, price, size)
+            .await?;
+        self.submit_order(&signed_order).await
     }
 }
 
