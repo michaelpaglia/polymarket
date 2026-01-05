@@ -140,7 +140,7 @@ impl OrderSigner {
         };
 
         let salt = generate_salt();
-        let nonce = generate_nonce();
+        let nonce = "0".to_string(); // Default nonce (for on-chain cancellations)
         let expiration = "0".to_string(); // GTC orders use 0, only GTD uses timestamp
 
         // Side as string ("BUY" or "SELL")
