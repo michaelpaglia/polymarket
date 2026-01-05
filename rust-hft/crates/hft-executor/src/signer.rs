@@ -21,25 +21,44 @@ pub const POLYGON_CHAIN_ID: u64 = 137;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OrderData {
+    pub salt: String,
     pub maker: String,
+    pub signer: String,
     pub taker: String,
     pub token_id: String,
     pub maker_amount: String,
     pub taker_amount: String,
-    pub side: u8,
-    pub fee_rate_bps: String,
-    pub nonce: String,
     pub expiration: String,
+    pub nonce: String,
+    pub fee_rate_bps: String,
+    pub side: String,  // "BUY" or "SELL" string, not int
     pub signature_type: u8,
+}
+
+/// Order with signature embedded (matches Python SignedOrder.dict() format)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrderWithSignature {
+    pub salt: String,
+    pub maker: String,
     pub signer: String,
+    pub taker: String,
+    pub token_id: String,
+    pub maker_amount: String,
+    pub taker_amount: String,
+    pub expiration: String,
+    pub nonce: String,
+    pub fee_rate_bps: String,
+    pub side: String,
+    pub signature_type: u8,
+    pub signature: String,
 }
 
 /// Signed order ready for submission (matches Python's order_to_json format)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SignedOrder {
-    pub order: OrderData,
-    pub signature: String,
+    pub order: OrderWithSignature,
     pub owner: String,
     pub order_type: String,
 }
@@ -81,6 +100,7 @@ impl OrderSigner {
         fee_rate_bps: u32,
     ) -> OrderData {
         let maker = self.address_hex();
+        let signer = self.address_hex();
         let taker = "0x0000000000000000000000000000000000000000".to_string();
 
         // Calculate amounts based on side
@@ -105,23 +125,29 @@ impl OrderSigner {
             }
         };
 
+        let salt = generate_salt();
         let nonce = generate_nonce();
         let expiration = generate_expiration(300); // 5 minutes
 
-        let signer = self.address_hex();
+        // Side as string ("BUY" or "SELL")
+        let side_str = match side {
+            Side::Buy => "BUY".to_string(),
+            Side::Sell => "SELL".to_string(),
+        };
 
         OrderData {
-            maker: maker.clone(),
+            salt,
+            maker,
+            signer,
             taker,
             token_id: token_id.to_string(),
             maker_amount,
             taker_amount,
-            side: side as u8,
-            fee_rate_bps: fee_rate_bps.to_string(),
-            nonce,
             expiration,
+            nonce,
+            fee_rate_bps: fee_rate_bps.to_string(),
+            side: side_str,
             signature_type: 0, // EOA signature
-            signer,
         }
     }
 
@@ -137,9 +163,27 @@ impl OrderSigner {
             .sign_hash(order_hash.into())
             .map_err(|e| HftError::SigningError(e.to_string()))?;
 
+        let sig_hex = format!("0x{}", hex::encode(signature.to_vec()));
+
+        // Create OrderWithSignature (signature embedded in order)
+        let order_with_sig = OrderWithSignature {
+            salt: order.salt.clone(),
+            maker: order.maker.clone(),
+            signer: order.signer.clone(),
+            taker: order.taker.clone(),
+            token_id: order.token_id.clone(),
+            maker_amount: order.maker_amount.clone(),
+            taker_amount: order.taker_amount.clone(),
+            expiration: order.expiration.clone(),
+            nonce: order.nonce.clone(),
+            fee_rate_bps: order.fee_rate_bps.clone(),
+            side: order.side.clone(),
+            signature_type: order.signature_type,
+            signature: sig_hex,
+        };
+
         Ok(SignedOrder {
-            order: order.clone(),
-            signature: format!("0x{}", hex::encode(signature.to_vec())),
+            order: order_with_sig,
             owner: api_key.to_string(),
             order_type: "GTC".to_string(),
         })
@@ -171,7 +215,7 @@ impl OrderSigner {
                 &encode_u256(token_id),
                 &encode_u256(maker_amount),
                 &encode_u256(taker_amount),
-                &encode_u8(order.side),
+                &encode_side(&order.side),
                 &encode_u256(parse_u256(&order.fee_rate_bps)?),
                 &encode_u256(parse_u256(&order.nonce)?),
                 &encode_u256(parse_u256(&order.expiration)?),
@@ -223,6 +267,18 @@ impl OrderSigner {
 }
 
 // Helper functions
+
+fn generate_salt() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    // Salt is a random-ish value for entropy - use timestamp + random suffix
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time before UNIX epoch")
+        .as_nanos();
+    // Combine with process id for additional entropy
+    let pid = std::process::id();
+    format!("{}{}", timestamp, pid)
+}
 
 fn generate_nonce() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -296,6 +352,12 @@ fn encode_u8(val: u8) -> [u8; 32] {
     let mut result = [0u8; 32];
     result[31] = val;
     result
+}
+
+fn encode_side(side: &str) -> [u8; 32] {
+    // BUY = 0, SELL = 1 for EIP-712 encoding
+    let val = if side == "BUY" { 0u8 } else { 1u8 };
+    encode_u8(val)
 }
 
 #[cfg(test)]
