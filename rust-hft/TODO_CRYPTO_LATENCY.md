@@ -1,6 +1,38 @@
 # 15-Minute Crypto Latency HFT - TODO
 
-## Last Session: 2026-01-04 (Session 5 - TILT Strategy Profitable!)
+## Last Session: 2026-01-05 (Session 6 - Orderbook Flow Detection)
+
+### Session 6 Progress
+- [x] **Orderbook sorting fixed** - Bids descending, asks ascending for correct best prices
+- [x] **FLOW signal detection** - Detects buying pressure on UP/DOWN tokens
+- [x] **Real orderbook data flowing** - Best bid/ask/depth now accurate
+
+### Orderbook Flow Detection
+```
+FLOW: Buying pressure on DOWN (flow=1.00, velocity=789.8bps/s) market=eth-updown-15m
+FLOW: Buying pressure on DOWN (flow=1.00, velocity=222.5bps/s) market=btc-updown-15m
+
+ORDERBOOK: UP bids=["0.75@180", "0.74@1532"] asks=["0.76@91", "0.77@598"] depth=75/24
+```
+
+Flow detection uses:
+- **flow_imbalance()**: -1.0 (selling) to +1.0 (buying) based on price movement direction
+- **velocity_bps_per_sec()**: How fast the orderbook mid-price is moving
+- Signals fire when flow > 0.6 AND velocity > 10bps/s
+
+### Key Files Modified This Session
+- `hft-websocket/src/client.rs` - Fixed orderbook sorting (bids desc, asks asc)
+- `hft-server/src/crypto_latency.rs` - Added FLOW signal detection and orderbook logging
+
+### Next Steps
+1. [ ] Enable FLOW-based paper trades (currently just logging)
+2. [ ] Compare FLOW signals with resolution outcomes
+3. [ ] Add rate limiting to FLOW signals (currently spammy)
+4. [ ] Combine FLOW + TILT for higher conviction trades
+
+---
+
+## Previous Session: 2026-01-04 (Session 5 - TILT Strategy Profitable!)
 
 ### Session 5 Progress
 - [x] **TILT signal strategy working** - Buy cheap side when market tilted (< 0.40)
