@@ -441,7 +441,7 @@ impl OrderExecutor {
             .signer
             .create_order(token_id, side, price, size, self.config.fee_rate_bps);
 
-        self.signer.sign_order(&order).await
+        self.signer.sign_order(&order, &self.credentials.api_key).await
     }
 
     /// Build HMAC signature for Level 2 auth (like Python's build_hmac_signature)
