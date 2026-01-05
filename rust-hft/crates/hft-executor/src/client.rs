@@ -475,6 +475,9 @@ impl OrderExecutor {
         let body = serde_json::to_string(order)
             .map_err(|e| HftError::Internal(format!("Failed to serialize order: {}", e)))?;
 
+        // Log the order payload to debug format issues
+        info!(payload = %body, "Order payload being submitted");
+
         // Get timestamp
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)

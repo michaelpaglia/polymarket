@@ -1,0 +1,22 @@
+[2m2026-01-04T03:37:31.253985Z[0m [32m INFO[0m =================================================
+[2m2026-01-04T03:37:31.254965Z[0m [32m INFO[0m   Crypto Latency HFT - 15-Minute Market Scalper
+[2m2026-01-04T03:37:31.255788Z[0m [32m INFO[0m =================================================
+[2m2026-01-04T03:37:31.256779Z[0m [32m INFO[0m Using Binance price feed (works from EU/NL server, blocked in US)
+[2m2026-01-04T03:37:31.264321Z[0m [32m INFO[0m Loaded proxies from file [3mcount[0m[2m=[0m5 [3mpath[0m[2m=[0m"../eu_proxies.txt"
+[2m2026-01-04T03:37:31.265221Z[0m [32m INFO[0m Loaded proxies for Polymarket [3mcount[0m[2m=[0m5
+[2m2026-01-04T03:37:31.280851Z[0m [32m INFO[0m Starting Crypto Latency HFT...
+[2m2026-01-04T03:37:31.281002Z[0m [32m INFO[0m Configuration loaded [3mpaper_mode[0m[2m=[0mtrue [3mposition_size[0m[2m=[0m50 [3mmin_edge_bps[0m[2m=[0m10
+[2m2026-01-04T03:37:31.281299Z[0m [32m INFO[0m Paper mode - skipping auto-redemption
+[2m2026-01-04T03:37:31.281378Z[0m [32m INFO[0m Using proxy for connection [3mproxy_host[0m[2m=[0mpremiumbeu.ahiddenproxy.com [3mproxy_port[0m[2m=[0m22226
+[2m2026-01-04T03:37:31.281463Z[0m [32m INFO[0m Connecting to Binance WebSocket... [3murl[0m[2m=[0mwss://stream.binance.com:443/ws/btcusdt@aggTrade/ethusdt@aggTrade
+[2m2026-01-04T03:37:31.281579Z[0m [32m INFO[0m Connecting to WebSocket... [3murl[0m[2m=[0mwss://ws-subscriptions-clob.polymarket.com/ws/market [3mproxy[0m[2m=[0mtrue
+[2m2026-01-04T03:37:31.281878Z[0m [32m INFO[0m Connecting via proxy [3mproxy[0m[2m=[0mpremiumbeu.ahiddenproxy.com:22226 [3mtarget[0m[2m=[0mws-subscriptions-clob.polymarket.com
+[2m2026-01-04T03:37:31.291818Z[0m [32m INFO[0m Stats update [3msignals[0m[2m=[0m0 [3mtrades[0m[2m=[0m0 [3mopen[0m[2m=[0m0 [3mpnl[0m[2m=[0m0 [3mwin_rate[0m[2m=[0m"0.0%" [3mprofit_factor[0m[2m=[0m"0.00" [3mtrades_per_hour[0m[2m=[0m"0.0"
+[2m2026-01-04T03:37:31.883453Z[0m [32m INFO[0m Proxy tunnel established [3mproxy[0m[2m=[0mpremiumbeu.ahiddenproxy.com:22226
+[2m2026-01-04T03:37:32.630005Z[0m [31mERROR[0m Binance WebSocket error [3merror[0m[2m=[0mConnection error: HTTP error: 451 Unavailable For Legal Reasons
+[2m2026-01-04T03:37:32.630647Z[0m [33m WARN[0m Reconnecting to Binance... [3mdelay_ms[0m[2m=[0m1000 [3mattempt[0m[2m=[0m1
+[2m2026-01-04T03:37:32.637477Z[0m [32m INFO[0m WebSocket connected via proxy (TLS)
+[2m2026-01-04T03:37:33.291728Z[0m [32m INFO[0m Trading loop active - scanning for signals
+[2m2026-01-04T03:37:33.641821Z[0m [32m INFO[0m Connecting to Binance WebSocket... [3murl[0m[2m=[0mwss://stream.binance.com:443/ws/btcusdt@aggTrade/ethusdt@aggTrade
+[2m2026-01-04T03:37:35.284255Z[0m [31mERROR[0m Binance WebSocket error [3merror[0m[2m=[0mConnection error: HTTP error: 451 Unavailable For Legal Reasons
+[2m2026-01-04T03:37:35.284671Z[0m [33m WARN[0m Reconnecting to Binance... [3mdelay_ms[0m[2m=[0m2000 [3mattempt[0m[2m=[0m2

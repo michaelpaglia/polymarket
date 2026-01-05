@@ -21,7 +21,7 @@ pub const POLYGON_CHAIN_ID: u64 = 137;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OrderData {
-    pub salt: String,
+    pub salt: u64,  // Integer in JSON, not string!
     pub maker: String,
     pub signer: String,
     pub taker: String,
@@ -39,7 +39,7 @@ pub struct OrderData {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OrderWithSignature {
-    pub salt: String,
+    pub salt: u64,  // Integer in JSON, not string!
     pub maker: String,
     pub signer: String,
     pub taker: String,
@@ -190,35 +190,44 @@ impl OrderSigner {
     }
 
     /// Compute EIP-712 order hash
+    /// Matches py_order_utils Order struct: salt, maker, signer, taker, tokenId, makerAmount,
+    /// takerAmount, expiration, nonce, feeRateBps, side, signatureType
     fn compute_order_hash(&self, order: &OrderData) -> HftResult<[u8; 32]> {
         // EIP-712 domain separator
         let domain_separator = self.compute_domain_separator()?;
 
-        // Order type hash
+        // Order type hash - must match py_order_utils Order struct exactly
         let type_hash = Keccak256::digest(
-            b"Order(address maker,address taker,uint256 tokenId,uint256 makerAmount,uint256 taker\
-              Amount,uint8 side,uint256 feeRateBps,uint256 nonce,uint256 expiration)",
+            b"Order(uint256 salt,address maker,address signer,address taker,uint256 tokenId,uint256 makerAmount,uint256 takerAmount,uint256 expiration,uint256 nonce,uint256 feeRateBps,uint8 side,uint8 signatureType)",
         );
 
-        // Encode order struct
+        // Encode order struct fields in exact order
+        let salt = U256::from(order.salt);
         let maker = parse_address(&order.maker)?;
+        let signer = parse_address(&order.signer)?;
         let taker = parse_address(&order.taker)?;
         let token_id = parse_u256(&order.token_id)?;
         let maker_amount = parse_u256(&order.maker_amount)?;
         let taker_amount = parse_u256(&order.taker_amount)?;
+        let expiration = parse_u256(&order.expiration)?;
+        let nonce = parse_u256(&order.nonce)?;
+        let fee_rate_bps = parse_u256(&order.fee_rate_bps)?;
 
         let struct_hash = Keccak256::digest(
             [
                 type_hash.as_slice(),
+                &encode_u256(salt),
                 &encode_address(maker),
+                &encode_address(signer),
                 &encode_address(taker),
                 &encode_u256(token_id),
                 &encode_u256(maker_amount),
                 &encode_u256(taker_amount),
+                &encode_u256(expiration),
+                &encode_u256(nonce),
+                &encode_u256(fee_rate_bps),
                 &encode_side(&order.side),
-                &encode_u256(parse_u256(&order.fee_rate_bps)?),
-                &encode_u256(parse_u256(&order.nonce)?),
-                &encode_u256(parse_u256(&order.expiration)?),
+                &encode_u8(order.signature_type),
             ]
             .concat(),
         );
@@ -268,16 +277,10 @@ impl OrderSigner {
 
 // Helper functions
 
-fn generate_salt() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    // Salt is a random-ish value for entropy - use timestamp + random suffix
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time before UNIX epoch")
-        .as_nanos();
-    // Combine with process id for additional entropy
-    let pid = std::process::id();
-    format!("{}{}", timestamp, pid)
+fn generate_salt() -> u64 {
+    use rand::Rng;
+    // Python uses random.randint(0, 2^32-1) for full entropy
+    rand::thread_rng().gen_range(0..=0xFFFF_FFFF)
 }
 
 fn generate_nonce() -> String {
