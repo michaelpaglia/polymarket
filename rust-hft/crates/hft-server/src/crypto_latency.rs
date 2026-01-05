@@ -12,6 +12,7 @@ use hft_signal::{SignalConfig, SignalDetector};
 use hft_simulator::{ExitConfig, PaperTradeSimulator, SimulatorConfig};
 use hft_websocket::{WebSocketClient, WebSocketConfig};
 use rust_decimal::Decimal;
+use rust_decimal::prelude::ToPrimitive;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -459,7 +460,7 @@ impl CryptoLatencyApp {
 
                 // Detect signal conditions
                 let tilt_threshold = 0.40;
-                let flow_threshold = 0.6;
+                let flow_threshold = 0.8;  // Increased from 0.6 to reduce noise
                 let velocity_threshold = 10.0;
 
                 let tilt_up = up_price < tilt_threshold;
@@ -497,11 +498,11 @@ impl CryptoLatencyApp {
                         (false, hft_core::Direction::Up, "", 0.0, 0)
                     };
 
-                // Rate limit signals by type (COMBO=10s, TILT=30s, FLOW=60s)
+                // Rate limit signals by type (COMBO=10s, TILT=30s, FLOW=120s)
                 let rate_limit_secs = match signal_type {
-                    "COMBO" => 10,  // High conviction, allow more frequent
-                    "TILT" => 30,   // Moderate conviction
-                    "FLOW" => 60,   // Low conviction, prone to noise
+                    "COMBO" => 10,   // High conviction, allow more frequent
+                    "TILT" => 30,    // Moderate conviction
+                    "FLOW" => 120,   // Low conviction, increased from 60s to reduce noise
                     _ => 30,
                 };
 
@@ -797,7 +798,8 @@ impl CryptoLatencyApp {
                             }
 
                             // Update P&L (in cents to avoid float atomics)
-                            let pnl_cents = (pnl * Decimal::from(100)).to_string().parse::<i64>().unwrap_or(0);
+                            // Use round() then to_i64() instead of string parsing (which fails on decimals)
+                            let pnl_cents = (pnl * Decimal::from(100)).round().to_i64().unwrap_or(0);
                             self.session_pnl_cents.fetch_add(pnl_cents, std::sync::atomic::Ordering::Relaxed);
 
                             // Get current session stats for logging
