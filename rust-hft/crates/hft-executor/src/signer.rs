@@ -103,24 +103,24 @@ impl OrderSigner {
         let signer = self.address_hex();
         let taker = "0x0000000000000000000000000000000000000000".to_string();
 
-        // Calculate amounts based on side
-        // For BUY: maker_amount = USD to spend, taker_amount = shares to receive
-        // For SELL: maker_amount = shares to sell, taker_amount = USD to receive
+        // Calculate amounts based on side with proper decimal precision
+        // BUY: maker (USDC) max 4 decimals, taker (shares) max 2 decimals
+        // SELL: maker (shares) max 2 decimals, taker (USDC) max 4 decimals
         let (maker_amount, taker_amount) = match side {
             Side::Buy => {
                 let usd_amount = price * size;
                 let shares = size;
                 (
-                    decimal_to_usdc_units(usd_amount),
-                    decimal_to_share_units(shares),
+                    decimal_to_usdc_units(usd_amount, 4),
+                    decimal_to_share_units(shares, 2),
                 )
             }
             Side::Sell => {
                 let shares = size;
                 let usd_amount = price * size;
                 (
-                    decimal_to_share_units(shares),
-                    decimal_to_usdc_units(usd_amount),
+                    decimal_to_share_units(shares, 2),
+                    decimal_to_usdc_units(usd_amount, 4),
                 )
             }
         };
@@ -302,10 +302,11 @@ fn generate_expiration(seconds: u64) -> String {
     expiry.to_string()
 }
 
-fn decimal_to_usdc_units(amount: Decimal) -> String {
-    // USDC has 6 decimals
-    let units = amount * Decimal::from(1_000_000);
-    // split() always yields at least one element
+fn decimal_to_usdc_units(amount: Decimal, max_decimals: u32) -> String {
+    // Truncate to max_decimals, then convert to 6-decimal units
+    // For BUY maker: max 4 decimals, for SELL taker: max 4 decimals
+    let truncated = amount.trunc_with_scale(max_decimals);
+    let units = truncated * Decimal::from(1_000_000);
     units
         .to_string()
         .split('.')
@@ -314,10 +315,11 @@ fn decimal_to_usdc_units(amount: Decimal) -> String {
         .to_string()
 }
 
-fn decimal_to_share_units(amount: Decimal) -> String {
-    // Shares have 6 decimals
-    let units = amount * Decimal::from(1_000_000);
-    // split() always yields at least one element
+fn decimal_to_share_units(amount: Decimal, max_decimals: u32) -> String {
+    // Truncate to max_decimals, then convert to 6-decimal units
+    // For BUY taker: max 2 decimals, for SELL maker: max 2 decimals
+    let truncated = amount.trunc_with_scale(max_decimals);
+    let units = truncated * Decimal::from(1_000_000);
     units
         .to_string()
         .split('.')
