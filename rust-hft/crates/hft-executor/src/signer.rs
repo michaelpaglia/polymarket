@@ -103,6 +103,9 @@ impl OrderSigner {
         let signer = self.address_hex();
         let taker = "0x0000000000000000000000000000000000000000".to_string();
 
+        // Round price to tick size (0.01 = 2 decimal places for these markets)
+        let price_rounded = price.round_dp(2);
+
         // Calculate amounts based on side with proper decimal precision
         // IMPORTANT: Truncate shares first, THEN calculate USDC from truncated shares
         // BUY: maker (USDC) max 4 decimals, taker (shares) max 2 decimals
@@ -111,7 +114,7 @@ impl OrderSigner {
             Side::Buy => {
                 // Truncate shares first, then calculate USDC
                 let shares_truncated = size.trunc_with_scale(2);
-                let usd_amount = price * shares_truncated;
+                let usd_amount = price_rounded * shares_truncated;
                 (
                     decimal_to_usdc_units(usd_amount, 4),
                     decimal_to_share_units(shares_truncated, 2),
@@ -120,7 +123,7 @@ impl OrderSigner {
             Side::Sell => {
                 // Truncate shares first, then calculate USDC
                 let shares_truncated = size.trunc_with_scale(2);
-                let usd_amount = price * shares_truncated;
+                let usd_amount = price_rounded * shares_truncated;
                 (
                     decimal_to_share_units(shares_truncated, 2),
                     decimal_to_usdc_units(usd_amount, 4),
