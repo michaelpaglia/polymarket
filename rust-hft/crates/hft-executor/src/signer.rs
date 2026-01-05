@@ -3,7 +3,7 @@
 use ethers::signers::{LocalWallet, Signer};
 use ethers::types::{Address, U256};
 use hft_core::{HftError, HftResult, Side};
-use rust_decimal::Decimal;
+use rust_decimal::{Decimal, RoundingStrategy};
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Keccak256};
 use std::str::FromStr;
@@ -112,16 +112,16 @@ impl OrderSigner {
         // SELL: maker (shares) max 2 decimals, taker (USDC) max 4 decimals
         let (maker_amount, taker_amount) = match side {
             Side::Buy => {
-                // Truncate shares first, then calculate USDC
-                let shares_truncated = size.trunc_with_scale(2);
-                let usd_amount = price_rounded * shares_truncated;
+                // Round UP shares to ensure we meet $1 minimum order size
+                let shares_rounded = size.round_dp_with_strategy(2, RoundingStrategy::AwayFromZero);
+                let usd_amount = price_rounded * shares_rounded;
                 (
                     decimal_to_usdc_units(usd_amount, 4),
-                    decimal_to_share_units(shares_truncated, 2),
+                    decimal_to_share_units(shares_rounded, 2),
                 )
             }
             Side::Sell => {
-                // Truncate shares first, then calculate USDC
+                // Round DOWN shares for sell orders (conservative)
                 let shares_truncated = size.trunc_with_scale(2);
                 let usd_amount = price_rounded * shares_truncated;
                 (
