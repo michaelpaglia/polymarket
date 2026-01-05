@@ -278,15 +278,9 @@ impl OrderSigner {
 // Helper functions
 
 fn generate_salt() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    // Salt is a random-ish value for entropy - use lower 32 bits of nanoseconds
-    // Python uses random.randint(0, 2^32-1) which fits in u32
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time before UNIX epoch")
-        .as_nanos();
-    // Take lower 32 bits to match Python's salt size (fits in JSON number safely)
-    (timestamp & 0xFFFF_FFFF) as u64
+    use rand::Rng;
+    // Python uses random.randint(0, 2^32-1) for full entropy
+    rand::thread_rng().gen_range(0..=0xFFFF_FFFF)
 }
 
 fn generate_nonce() -> String {
