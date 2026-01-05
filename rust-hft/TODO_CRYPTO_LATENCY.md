@@ -1,6 +1,46 @@
 # 15-Minute Crypto Latency HFT - TODO
 
-## Last Session: 2026-01-05 (Session 8 - FLOW Tuning & P&L Fix)
+## Last Session: 2026-01-05 (Session 9 - Live Trading Infrastructure)
+
+### Session 9 Progress
+- [x] **Live order execution added** - OrderExecutor integrated into CryptoLatencyApp
+- [x] **Auto-redemption verified** - Already runs every 60s when not in paper mode
+- [x] **LIVE_TRADING env var** - Set `LIVE_TRADING=1` to enable real trades
+- [x] **Position tracking** - LivePosition struct tracks live positions for P&L
+
+### Live Trading Setup
+```bash
+# Only need private key - API credentials are derived automatically (like Python)
+export POLYMARKET_PRIVATE_KEY="your_polygon_private_key"
+
+# Enable live trading (default is paper mode)
+export LIVE_TRADING=1
+
+# Position size (default $1 for safety, adjust as needed)
+export POSITION_SIZE_USD=1
+
+# Run with Kraken price feed (works from US)
+USE_KRAKEN=1 AGGRESSIVE_MODE=1 LIVE_TRADING=1 POSITION_SIZE_USD=1 cargo run --release --bin crypto-latency
+```
+
+### Testing Checklist
+Before going live:
+1. [ ] Verify wallet has USDC balance on Polygon
+2. [ ] Verify wallet has MATIC for gas
+3. [ ] Verify API credentials are correct (from Polymarket CLOB)
+4. [ ] Start with paper mode to verify signals fire
+5. [ ] Enable live mode with $1 position size for one window
+6. [ ] Monitor auto-redemption after window resolves
+
+### Auto-Redemption
+- Runs every 60 seconds when `LIVE_TRADING=1`
+- Checks for redeemable positions via Polymarket data API
+- Submits redemption transactions to Polygon mainnet
+- Requires `POLYMARKET_PRIVATE_KEY` or `POLYGON_PRIVATE_KEY`
+
+---
+
+## Previous Session: 2026-01-05 (Session 8 - FLOW Tuning & P&L Fix)
 
 ### Session 8 Progress
 - [x] **Tested 10PM window** - 36 trades, 9 wins, 27 losses (25% win rate)
@@ -33,9 +73,10 @@
 
 ### Next Steps
 1. [x] Test with new FLOW parameters (0.8 threshold, 120s rate limit) - SUCCESS!
-2. [ ] Consider disabling FLOW entirely if still too noisy
-3. [ ] Track win rate over multiple windows
-4. [ ] Deploy to NL server for lower latency testing
+2. [x] Add live trading infrastructure - DONE!
+3. [ ] Test live trading for one 15-minute window with small size ($1)
+4. [ ] Monitor auto-redemption working correctly
+5. [ ] Deploy to NL server for lower latency + Binance price feed
 
 ---
 

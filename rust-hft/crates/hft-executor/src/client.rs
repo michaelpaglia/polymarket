@@ -7,13 +7,18 @@ use ethers::signers::{LocalWallet, Signer};
 use hft_core::{
     ArbitrageExecution, ArbitrageOpportunity, ExecutionStatus, HftError, HftResult, Side,
 };
-use reqwest::Client;
+use base64::{engine::general_purpose::URL_SAFE, Engine};
+use hmac::{Hmac, Mac};
+use reqwest::{Client, Proxy};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
+
+type HmacSha256 = Hmac<Sha256>;
 
 /// CLOB API base URL
 pub const CLOB_URL: &str = "https://clob.polymarket.com";
@@ -29,6 +34,8 @@ pub struct ExecutorConfig {
     pub max_retries: u32,
     /// Fee rate in basis points
     pub fee_rate_bps: u32,
+    /// Optional HTTP proxy URL for order submission (format: http://user:pass@host:port)
+    pub proxy_url: Option<String>,
 }
 
 impl Default for ExecutorConfig {
@@ -38,6 +45,7 @@ impl Default for ExecutorConfig {
             order_timeout_ms: 5000,
             max_retries: 2,
             fee_rate_bps: 0, // No fees for takers
+            proxy_url: None,
         }
     }
 }
@@ -111,9 +119,19 @@ impl OrderExecutor {
         // Derive credentials from private key (like Python's create_or_derive_api_creds)
         let credentials = Self::derive_api_credentials(&config.clob_url, private_key).await?;
 
-        let http_client = Client::builder()
+        let mut client_builder = Client::builder()
             .timeout(std::time::Duration::from_millis(config.order_timeout_ms))
-            .tcp_nodelay(true)
+            .tcp_nodelay(true);
+
+        // Add proxy if configured
+        if let Some(proxy_url) = &config.proxy_url {
+            let proxy = Proxy::all(proxy_url)
+                .map_err(|e| HftError::Internal(format!("Invalid proxy URL: {}", e)))?;
+            client_builder = client_builder.proxy(proxy);
+            info!(proxy = %proxy_url.split('@').last().unwrap_or(proxy_url), "Using HTTP proxy for orders");
+        }
+
+        let http_client = client_builder
             .build()
             .map_err(|e| HftError::Internal(e.to_string()))?;
 
@@ -135,52 +153,106 @@ impl OrderExecutor {
     }
 
     /// Derive API credentials from private key (matches py_clob_client behavior)
+    /// Uses EIP-712 typed data signing with POLY_* headers
     async fn derive_api_credentials(
         clob_url: &str,
         private_key: &str,
     ) -> HftResult<ApiCredentials> {
         let wallet: LocalWallet = private_key
-            .parse()
-            .map_err(|e| HftError::SigningError(format!("Invalid private key: {}", e)))?;
+            .parse::<LocalWallet>()
+            .map_err(|e| HftError::SigningError(format!("Invalid private key: {}", e)))?
+            .with_chain_id(137u64); // Polygon mainnet
 
         let address = format!("{:?}", wallet.address());
 
-        // Create timestamp for signing
+        // Create timestamp for signing (Unix seconds)
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system time before UNIX epoch")
             .as_secs();
 
-        // Message to sign (Polymarket CLOB format)
-        let message = format!("I want to derive my API credentials at {}", timestamp);
+        let nonce: u64 = 0;
 
-        // Sign the message
+        // Build EIP-712 typed data for ClobAuth
+        // Domain: ClobAuthDomain v1, chainId=137
+        // Message: "This message attests that I control the given wallet"
+        let msg_to_sign = "This message attests that I control the given wallet";
+
+        // Build the typed data hash manually matching py_clob_client
+        use sha3::{Digest, Keccak256};
+
+        // Domain separator
+        let domain_type_hash =
+            Keccak256::digest(b"EIP712Domain(string name,string version,uint256 chainId)");
+        let name_hash = Keccak256::digest(b"ClobAuthDomain");
+        let version_hash = Keccak256::digest(b"1");
+
+        let mut domain_data = Vec::new();
+        domain_data.extend_from_slice(&domain_type_hash);
+        domain_data.extend_from_slice(&name_hash);
+        domain_data.extend_from_slice(&version_hash);
+        // chainId as uint256
+        let mut chain_id_bytes = [0u8; 32];
+        chain_id_bytes[31] = 137u8; // Polygon chainId = 137
+        domain_data.extend_from_slice(&chain_id_bytes);
+
+        let domain_separator = Keccak256::digest(&domain_data);
+
+        // Message type hash
+        let type_hash = Keccak256::digest(
+            b"ClobAuth(address address,string timestamp,uint256 nonce,string message)",
+        );
+
+        // Encode the message struct
+        let timestamp_str = timestamp.to_string();
+        let timestamp_hash = Keccak256::digest(timestamp_str.as_bytes());
+        let message_hash = Keccak256::digest(msg_to_sign.as_bytes());
+
+        // address as bytes32 (left-padded)
+        let mut addr_bytes = [0u8; 32];
+        addr_bytes[12..32].copy_from_slice(wallet.address().as_bytes());
+
+        // nonce as uint256
+        let mut nonce_bytes = [0u8; 32];
+        nonce_bytes[24..32].copy_from_slice(&nonce.to_be_bytes());
+
+        let mut struct_data = Vec::new();
+        struct_data.extend_from_slice(&type_hash);
+        struct_data.extend_from_slice(&addr_bytes);
+        struct_data.extend_from_slice(&timestamp_hash);
+        struct_data.extend_from_slice(&nonce_bytes);
+        struct_data.extend_from_slice(&message_hash);
+
+        let struct_hash = Keccak256::digest(&struct_data);
+
+        // Final hash: keccak256("\x19\x01" || domain_separator || struct_hash)
+        let mut final_data = Vec::new();
+        final_data.push(0x19);
+        final_data.push(0x01);
+        final_data.extend_from_slice(&domain_separator);
+        final_data.extend_from_slice(&struct_hash);
+
+        let digest = Keccak256::digest(&final_data);
+
+        // Sign the hash - convert to [u8; 32] for H256
+        let mut hash_bytes = [0u8; 32];
+        hash_bytes.copy_from_slice(&digest);
         let signature = wallet
-            .sign_message(&message)
-            .await
+            .sign_hash(hash_bytes.into())
             .map_err(|e| HftError::SigningError(format!("Failed to sign: {}", e)))?;
 
         let sig_hex = format!("0x{}", hex::encode(signature.to_vec()));
 
-        // Call derive endpoint
+        // Call derive endpoint with GET and POLY_* headers
         let client = Client::new();
         let url = format!("{}/auth/derive-api-key", clob_url);
 
-        #[derive(Serialize)]
-        struct DeriveRequest {
-            message: String,
-            timestamp: u64,
-            signature: String,
-        }
-
         let response = client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .json(&DeriveRequest {
-                message,
-                timestamp,
-                signature: sig_hex,
-            })
+            .get(&url)
+            .header("POLY_ADDRESS", &address)
+            .header("POLY_SIGNATURE", &sig_hex)
+            .header("POLY_TIMESTAMP", timestamp.to_string())
+            .header("POLY_NONCE", nonce.to_string())
             .send()
             .await
             .map_err(|e| HftError::HttpError(format!("Derive creds request failed: {}", e)))?;
@@ -221,9 +293,19 @@ impl OrderExecutor {
     ) -> HftResult<Self> {
         let signer = OrderSigner::new(private_key, chain_id)?;
 
-        let http_client = Client::builder()
+        let mut client_builder = Client::builder()
             .timeout(std::time::Duration::from_millis(config.order_timeout_ms))
-            .tcp_nodelay(true)
+            .tcp_nodelay(true);
+
+        // Add proxy if configured
+        if let Some(proxy_url) = &config.proxy_url {
+            let proxy = Proxy::all(proxy_url)
+                .map_err(|e| HftError::Internal(format!("Invalid proxy URL: {}", e)))?;
+            client_builder = client_builder.proxy(proxy);
+            info!(proxy = %proxy_url.split('@').last().unwrap_or(proxy_url), "Using HTTP proxy for orders");
+        }
+
+        let http_client = client_builder
             .build()
             .map_err(|e| HftError::Internal(e.to_string()))?;
 
@@ -362,21 +444,56 @@ impl OrderExecutor {
         self.signer.sign_order(&order).await
     }
 
+    /// Build HMAC signature for Level 2 auth (like Python's build_hmac_signature)
+    fn build_hmac_signature(&self, timestamp: i64, method: &str, request_path: &str, body: &str) -> HftResult<String> {
+        // Decode base64 secret
+        let secret_bytes = URL_SAFE
+            .decode(&self.credentials.api_secret)
+            .map_err(|e| HftError::SigningError(format!("Failed to decode API secret: {}", e)))?;
+
+        // Build message: timestamp + method + path + body
+        let message = format!("{}{}{}{}", timestamp, method, request_path, body);
+
+        // HMAC-SHA256
+        let mut mac = HmacSha256::new_from_slice(&secret_bytes)
+            .map_err(|e| HftError::SigningError(format!("Failed to create HMAC: {}", e)))?;
+        mac.update(message.as_bytes());
+        let result = mac.finalize();
+
+        // Base64 encode
+        Ok(URL_SAFE.encode(result.into_bytes()))
+    }
+
     /// Submit order to CLOB
     async fn submit_order(&self, order: &SignedOrder) -> HftResult<Option<String>> {
         self.orders_submitted.fetch_add(1, Ordering::Relaxed);
 
-        let url = format!("{}/order", self.config.clob_url);
+        let request_path = "/order";
+        let url = format!("{}{}", self.config.clob_url, request_path);
+
+        // Serialize body for HMAC
+        let body = serde_json::to_string(order)
+            .map_err(|e| HftError::Internal(format!("Failed to serialize order: {}", e)))?;
+
+        // Get timestamp
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before UNIX epoch")
+            .as_secs() as i64;
+
+        // Build HMAC signature
+        let hmac_sig = self.build_hmac_signature(timestamp, "POST", request_path, &body)?;
 
         let response = self
             .http_client
             .post(&url)
-            .header("POLY-ADDRESS", self.signer.address_hex())
-            .header("POLY-API-KEY", &self.credentials.api_key)
-            .header("POLY-API-SECRET", &self.credentials.api_secret)
-            .header("POLY-API-PASSPHRASE", &self.credentials.api_passphrase)
+            .header("POLY_ADDRESS", self.signer.address_hex())
+            .header("POLY_SIGNATURE", &hmac_sig)
+            .header("POLY_TIMESTAMP", timestamp.to_string())
+            .header("POLY_API_KEY", &self.credentials.api_key)
+            .header("POLY_PASSPHRASE", &self.credentials.api_passphrase)
             .header("Content-Type", "application/json")
-            .json(order)
+            .body(body)
             .send()
             .await
             .map_err(|e| HftError::HttpError(e.to_string()))?;

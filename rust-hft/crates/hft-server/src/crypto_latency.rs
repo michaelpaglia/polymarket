@@ -1168,7 +1168,9 @@ async fn main() -> Result<()> {
     };
 
     // Create Polymarket client with proxy support
-    let polymarket_client = if std::path::Path::new(&proxy_file).exists() {
+    // WebSocket works direct from US - don't use proxies for WebSocket
+    // Only use proxies for HTTP order execution (configured separately)
+    let polymarket_client = if false && std::path::Path::new(&proxy_file).exists() {
         match hft_websocket::ProxyRotator::from_file(&proxy_file) {
             Ok(rotator) => {
                 info!(count = rotator.len(), "Loaded proxies for Polymarket");
@@ -1195,9 +1197,44 @@ async fn main() -> Result<()> {
 
         info!("Deriving API credentials from private key...");
 
+        // Load HTTP proxy from proxy file for order submission (EU proxy needed to bypass US block)
+        let http_proxy_url = if std::path::Path::new(&proxy_file).exists() {
+            match std::fs::read_to_string(&proxy_file) {
+                Ok(content) => {
+                    // Get first proxy line: host:port:user:pass -> http://user:pass@host:port
+                    if let Some(first_line) = content.lines().next() {
+                        let parts: Vec<&str> = first_line.trim().split(':').collect();
+                        if parts.len() >= 4 {
+                            let proxy_url = format!(
+                                "http://{}:{}@{}:{}",
+                                parts[2], parts[3], parts[0], parts[1]
+                            );
+                            info!(proxy_host = %parts[0], "Using EU proxy for order execution");
+                            Some(proxy_url)
+                        } else {
+                            warn!("Invalid proxy format in {}", proxy_file);
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to read proxy file");
+                    None
+                }
+            }
+        } else {
+            info!("No proxy file found - orders will be sent directly");
+            None
+        };
+
+        let mut exec_config = ExecutorConfig::default();
+        exec_config.proxy_url = http_proxy_url;
+
         // Derive credentials automatically (like Python py_clob_client)
         match OrderExecutor::new_with_derived_creds(
-            ExecutorConfig::default(),
+            exec_config,
             &private_key,
             137, // Polygon mainnet
         )
