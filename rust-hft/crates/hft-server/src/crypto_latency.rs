@@ -44,8 +44,14 @@ pub struct CryptoLatencyApp {
     /// Statistics
     signals_detected: AtomicU64,
     trades_executed: AtomicU64,
+    /// Session statistics
+    session_wins: AtomicU64,
+    session_losses: AtomicU64,
+    session_pnl_cents: std::sync::atomic::AtomicI64, // in cents to avoid float atomics
     /// Last signal time per market (for rate limiting)
     last_signal: Arc<RwLock<HashMap<String, std::time::Instant>>>,
+    /// Last status log time per market (for rate limiting)
+    last_status_log: Arc<RwLock<HashMap<String, std::time::Instant>>>,
     /// Strike prices by market ID (captured when window starts)
     strike_prices: Arc<RwLock<HashMap<String, Decimal>>>,
 }
@@ -79,7 +85,11 @@ impl CryptoLatencyApp {
             orderbooks: Arc::new(RwLock::new(HashMap::new())),
             signals_detected: AtomicU64::new(0),
             trades_executed: AtomicU64::new(0),
+            session_wins: AtomicU64::new(0),
+            session_losses: AtomicU64::new(0),
+            session_pnl_cents: std::sync::atomic::AtomicI64::new(0),
             last_signal: Arc::new(RwLock::new(HashMap::new())),
+            last_status_log: Arc::new(RwLock::new(HashMap::new())),
             strike_prices: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -420,35 +430,109 @@ impl CryptoLatencyApp {
                     continue;
                 }
 
-                let mut emitted_signal = false;
+                // =======================================================
+                // MECHANICAL SIGNAL DETECTION - Repeatable every 15 minutes
+                // =======================================================
+                //
+                // Signal Types:
+                // 1. TILT: Buy cheap side when market heavily tilted (< 0.40)
+                // 2. FLOW: Buy side with strong orderbook momentum (flow > 0.6)
+                // 3. COMBO: Both TILT and FLOW agree = higher conviction
+                //
+                // All signals rate-limited to once per 5 seconds per market
+                // =======================================================
 
-                // TILT SIGNAL: Buy the CHEAP side when market is heavily tilted
-                // If up_price < 0.40, buy UP (contrarian - market expects DOWN)
-                // If down_price < 0.40, buy DOWN (contrarian - market expects UP)
-                let up_cheap = up_price < 0.40;
-                let down_cheap = down_price < 0.40;
+                // Get orderbook flow data
+                let (yes_flow, no_flow, yes_velocity, no_velocity) = {
+                    let books = self.orderbooks.read().await;
+                    if let Some(orderbook) = books.get(market_id) {
+                        (
+                            orderbook.yes_book.flow_imbalance(),
+                            orderbook.no_book.flow_imbalance(),
+                            orderbook.yes_book.velocity_bps_per_sec(),
+                            orderbook.no_book.velocity_bps_per_sec(),
+                        )
+                    } else {
+                        (0.0, 0.0, 0.0, 0.0)
+                    }
+                };
 
-                if (up_cheap || down_cheap) && self.config.paper_mode {
-                    // Buy the cheap side
-                    let direction = if up_cheap { hft_core::Direction::Up } else { hft_core::Direction::Down };
-                    let direction_str = if up_cheap { "Up" } else { "Down" };
-                    let entry_price = if up_cheap { up_price } else { down_price };
-                    let tilt_bps = ((0.50 - entry_price.min(0.50)) * 10000.0) as u32;
+                // Detect signal conditions
+                let tilt_threshold = 0.40;
+                let flow_threshold = 0.6;
+                let velocity_threshold = 10.0;
+
+                let tilt_up = up_price < tilt_threshold;
+                let tilt_down = down_price < tilt_threshold;
+                let flow_up = yes_flow > flow_threshold && yes_velocity > velocity_threshold;
+                let flow_down = no_flow > flow_threshold && no_velocity > velocity_threshold;
+
+                // Determine trade direction and signal type
+                let (should_trade, direction, signal_type, entry_price, edge_bps) =
+                    if tilt_up && flow_up {
+                        // COMBO: Both tilt AND flow favor UP
+                        let edge = ((0.50 - up_price.min(0.50)) * 10000.0) as u32 + 500; // +500 for combo
+                        (true, hft_core::Direction::Up, "COMBO", up_price, edge)
+                    } else if tilt_down && flow_down {
+                        // COMBO: Both tilt AND flow favor DOWN
+                        let edge = ((0.50 - down_price.min(0.50)) * 10000.0) as u32 + 500;
+                        (true, hft_core::Direction::Down, "COMBO", down_price, edge)
+                    } else if tilt_up {
+                        // TILT only: cheap UP side
+                        let edge = ((0.50 - up_price.min(0.50)) * 10000.0) as u32;
+                        (true, hft_core::Direction::Up, "TILT", up_price, edge)
+                    } else if tilt_down {
+                        // TILT only: cheap DOWN side
+                        let edge = ((0.50 - down_price.min(0.50)) * 10000.0) as u32;
+                        (true, hft_core::Direction::Down, "TILT", down_price, edge)
+                    } else if flow_up && up_price < 0.55 {
+                        // FLOW only: strong UP momentum, price not too expensive
+                        let edge = (yes_flow * 1000.0) as u32;
+                        (true, hft_core::Direction::Up, "FLOW", up_price, edge)
+                    } else if flow_down && down_price < 0.55 {
+                        // FLOW only: strong DOWN momentum, price not too expensive
+                        let edge = (no_flow * 1000.0) as u32;
+                        (true, hft_core::Direction::Down, "FLOW", down_price, edge)
+                    } else {
+                        (false, hft_core::Direction::Up, "", 0.0, 0)
+                    };
+
+                // Rate limit signals by type (COMBO=10s, TILT=30s, FLOW=60s)
+                let rate_limit_secs = match signal_type {
+                    "COMBO" => 10,  // High conviction, allow more frequent
+                    "TILT" => 30,   // Moderate conviction
+                    "FLOW" => 60,   // Low conviction, prone to noise
+                    _ => 30,
+                };
+
+                let can_trade = {
+                    let signals = self.last_signal.read().await;
+                    signals.get(market_id)
+                        .map(|t| t.elapsed() > Duration::from_secs(rate_limit_secs))
+                        .unwrap_or(true)
+                };
+
+                // Execute trade if signal detected and rate limit allows
+                if should_trade && can_trade && self.config.paper_mode {
+                    let direction_str = match direction {
+                        hft_core::Direction::Up => "Up",
+                        hft_core::Direction::Down => "Down",
+                    };
                     let payout_if_wins = 1.0 / entry_price;
 
                     info!(
                         market = %market_id,
                         asset = %market.asset,
+                        signal = signal_type,
                         side = direction_str,
                         entry = format!("{:.3}", entry_price),
-                        tilt_bps = tilt_bps,
+                        edge_bps = edge_bps,
                         payout = format!("{:.2}x", payout_if_wins),
-                        time_left_secs = time_left,
-                        "TILT: Buy {} @ {:.3} ({}bps from 0.50, payout {:.2}x)",
-                        direction_str,
-                        entry_price,
-                        tilt_bps,
-                        payout_if_wins
+                        flow_up = format!("{:.2}", yes_flow),
+                        flow_down = format!("{:.2}", no_flow),
+                        time_left = time_left,
+                        "SIGNAL: {} {} @ {:.3} (edge={}bps, payout={:.2}x)",
+                        signal_type, direction_str, entry_price, edge_bps, payout_if_wins
                     );
 
                     let signal = hft_core::LatencySignal {
@@ -456,11 +540,11 @@ impl CryptoLatencyApp {
                         asset: market.asset,
                         direction,
                         binance_price: Decimal::ZERO,
-                        price_change_bps: tilt_bps as i32,
+                        price_change_bps: edge_bps as i32,
                         polymarket_price: Decimal::try_from(entry_price).unwrap_or(Decimal::new(50, 2)),
                         expected_price: Decimal::try_from(entry_price + 0.02).unwrap_or(Decimal::new(52, 2)),
-                        edge_bps: tilt_bps,
-                        confidence: 0.55,
+                        edge_bps,
+                        confidence: if signal_type == "COMBO" { 0.70 } else { 0.55 },
                         detected_at_ns: 0,
                         binance_update_ns: 0,
                         polymarket_update_ns: 0,
@@ -472,253 +556,59 @@ impl CryptoLatencyApp {
                         self.trades_executed.fetch_add(1, Ordering::Relaxed);
                         info!(
                             trade_id = %trade.trade_id,
-                            "TRADE: {} {} @ {} ($1 bet)",
-                            market.asset,
-                            direction_str,
-                            trade.entry_price
+                            signal = signal_type,
+                            "TRADE: {} {} @ {} ($1 bet via {})",
+                            market.asset, direction_str, trade.entry_price, signal_type
                         );
+
+                        // Update last signal time
+                        let mut signals = self.last_signal.write().await;
+                        signals.insert(market_id.clone(), std::time::Instant::now());
                     }
-                    emitted_signal = true;
                 }
 
-                // FLOW SIGNAL: Use orderbook flow imbalance to detect directional pressure
-                // Flow imbalance: -1.0 (selling pressure) to +1.0 (buying pressure)
-                // Velocity: how fast the orderbook mid-price is moving (bps/sec)
-                if !emitted_signal {
+                // Log orderbook status every 30 seconds (rate limited properly)
+                let should_log_status = {
+                    let status_logs = self.last_status_log.read().await;
+                    status_logs.get(market_id)
+                        .map(|t| t.elapsed() > Duration::from_secs(30))
+                        .unwrap_or(true)
+                };
+
+                if should_log_status {
+                    // Update last status log time
+                    let mut status_logs = self.last_status_log.write().await;
+                    status_logs.insert(market_id.clone(), std::time::Instant::now());
+                    drop(status_logs);
+
                     let books = self.orderbooks.read().await;
                     if let Some(orderbook) = books.get(market_id) {
-                        // Get YES book flow metrics (UP token)
-                        let yes_flow = orderbook.yes_book.flow_imbalance();
-                        let yes_velocity = orderbook.yes_book.velocity_bps_per_sec();
-                        let _yes_change = orderbook.yes_book.price_change_bps();
-
-                        // Get NO book flow metrics (DOWN token)
-                        let no_flow = orderbook.no_book.flow_imbalance();
-                        let no_velocity = orderbook.no_book.velocity_bps_per_sec();
-                        let _no_change = orderbook.no_book.price_change_bps();
-
-                        // Get best bid/ask for context
-                        let yes_bid = orderbook.yes_book.best_bid();
-                        let yes_ask = orderbook.yes_book.best_ask();
-                        let no_bid = orderbook.no_book.best_bid();
-                        let no_ask = orderbook.no_book.best_ask();
-
-                        // Get actual book depth from snapshot
                         let yes_snapshot = orderbook.yes_book.snapshot();
-                        let no_snapshot = orderbook.no_book.snapshot();
-                        let yes_bids_count = yes_snapshot.bids.len();
-                        let yes_asks_count = yes_snapshot.asks.len();
-                        let no_bids_count = no_snapshot.bids.len();
-                        let no_asks_count = no_snapshot.asks.len();
+                        let yes_bids: Vec<String> = yes_snapshot.bids.iter().take(2).map(|l| format!("{:.2}", l.price)).collect();
+                        let yes_asks: Vec<String> = yes_snapshot.asks.iter().take(2).map(|l| format!("{:.2}", l.price)).collect();
 
-                        // Get actual best bid/ask from snapshot (not atomic cache)
-                        let yes_snapshot_bid = yes_snapshot.best_bid();
-                        let yes_snapshot_ask = yes_snapshot.best_ask();
-
-                        // Log orderbook metrics every 30 seconds (less spam)
-                        if time_left % 30 == 0 {
-                            // Show first 3 bids and asks to see the actual book
-                            let yes_top_bids: Vec<String> = yes_snapshot.bids.iter().take(3).map(|l| format!("{:.2}@{:.0}", l.price, l.size)).collect();
-                            let yes_top_asks: Vec<String> = yes_snapshot.asks.iter().take(3).map(|l| format!("{:.2}@{:.0}", l.price, l.size)).collect();
-
-                            info!(
-                                market = %market_id,
-                                asset = %market.asset,
-                                yes_bids = ?yes_top_bids,
-                                yes_asks = ?yes_top_asks,
-                                yes_depth = format!("{}/{}", yes_bids_count, yes_asks_count),
-                                yes_flow = format!("{:.2}", yes_flow),
-                                time_left = time_left,
-                                "ORDERBOOK: UP bids={:?} asks={:?} depth={}/{}",
-                                yes_top_bids, yes_top_asks, yes_bids_count, yes_asks_count
-                            );
-                        }
-
-                        // FLOW SIGNAL: Strong imbalance suggests directional pressure
-                        // If YES (UP) flow > 0.5, buying pressure on UP token
-                        // If NO (DOWN) flow > 0.5, buying pressure on DOWN token
-                        let flow_threshold = 0.6; // Strong imbalance
-
-                        if yes_flow > flow_threshold && yes_velocity > 10.0 && self.config.paper_mode {
-                            // Strong buying on UP token with upward velocity
-                            info!(
-                                market = %market_id,
-                                asset = %market.asset,
-                                flow = format!("{:.2}", yes_flow),
-                                velocity = format!("{:.1}bps/s", yes_velocity),
-                                "FLOW: Buying pressure on UP (flow={:.2}, velocity={:.1}bps/s)",
-                                yes_flow, yes_velocity
-                            );
-                            // Could execute trade here if we want to add FLOW-based trades
-                        } else if no_flow > flow_threshold && no_velocity > 10.0 && self.config.paper_mode {
-                            // Strong buying on DOWN token with upward velocity
-                            info!(
-                                market = %market_id,
-                                asset = %market.asset,
-                                flow = format!("{:.2}", no_flow),
-                                velocity = format!("{:.1}bps/s", no_velocity),
-                                "FLOW: Buying pressure on DOWN (flow={:.2}, velocity={:.1}bps/s)",
-                                no_flow, no_velocity
-                            );
-                            // Could execute trade here if we want to add FLOW-based trades
-                        }
-                    }
-                    drop(books);
-                }
-
-                // MOMENTUM signal disabled - was creating conflicting bets with TILT
-                // The TILT signal is sufficient for contrarian betting
-                if let Some((up_favored, strength_bps)) = self.discovery.get_market_momentum(market_id) {
-                    if strength_bps >= 50 && !emitted_signal {
-                        let direction_str = if up_favored { "UP" } else { "DOWN" };
-                        debug!(
-                            market = %market_id,
-                            direction = direction_str,
-                            strength_bps = strength_bps,
-                            "Momentum detected (not trading)"
-                        );
-                    }
-                }
-
-                // EDGE DETECTION: Compare real-time crypto price vs strike vs market odds
-                // Get current crypto price from momentum data
-                let asset_type = match market.asset {
-                    hft_core::CryptoAsset::BTC => CryptoAsset::BTC,
-                    hft_core::CryptoAsset::ETH => CryptoAsset::ETH,
-                };
-                let current_crypto = momenta.iter()
-                    .find(|m| m.asset == asset_type)
-                    .map(|m| m.current_price);
-
-                // Get strike price from our cache
-                let strike = {
-                    let strikes = self.strike_prices.read().await;
-                    strikes.get(market_id).cloned()
-                };
-
-                // Calculate edge if we have both crypto price and strike
-                if let (Some(crypto_price), Some(strike)) = (current_crypto, strike) {
-                    // Calculate how much crypto has moved from strike (in bps)
-                    let price_move_bps = if strike > Decimal::ZERO {
-                        ((crypto_price - strike) / strike * Decimal::from(10000))
-                            .to_string()
-                            .parse::<i32>()
-                            .unwrap_or(0)
-                    } else {
-                        0
-                    };
-
-                    // Determine implied direction and expected probability
-                    // Positive price_move_bps = crypto UP = should buy UP
-                    // Negative price_move_bps = crypto DOWN = should buy DOWN
-                    let crypto_favors_up = price_move_bps > 0;
-                    let price_move_abs = price_move_bps.abs();
-
-                    // Market's current pricing
-                    let market_prob_up = up_price;
-                    let market_prob_down = down_price;
-
-                    // Calculate edge: if crypto is up but UP is underpriced, there's edge
-                    // Simple heuristic: 100bps crypto move should ~= 10% probability shift
-                    let implied_prob_shift = (price_move_abs as f64) / 1000.0; // 100bps = 10%
-
-                    let edge_bps = if crypto_favors_up {
-                        // Crypto up → check if UP is underpriced
-                        // Expected UP prob = 0.5 + implied_shift
-                        let expected_up = 0.5 + implied_prob_shift;
-                        let edge = expected_up - market_prob_up;
-                        (edge * 10000.0) as i32
-                    } else {
-                        // Crypto down → check if DOWN is underpriced
-                        let expected_down = 0.5 + implied_prob_shift;
-                        let edge = expected_down - market_prob_down;
-                        (edge * 10000.0) as i32
-                    };
-
-                    // Log edge calculation for debugging
-                    debug!(
-                        market = %market_id,
-                        crypto_price = %crypto_price,
-                        strike = %strike,
-                        price_move_bps = price_move_bps,
-                        crypto_favors = if crypto_favors_up { "UP" } else { "DOWN" },
-                        edge_bps = edge_bps,
-                        market_up = format!("{:.3}", market_prob_up),
-                        market_down = format!("{:.3}", market_prob_down),
-                        "Edge calculation"
-                    );
-
-                    // Only trade if there's positive edge (>50bps)
-                    if edge_bps >= 50 {
-                        let direction = if crypto_favors_up { hft_core::Direction::Up } else { hft_core::Direction::Down };
-                        let direction_str = if crypto_favors_up { "Up" } else { "Down" };
-                        let entry_price = if crypto_favors_up { up_price } else { down_price };
+                        // Get session stats
+                        let wins = self.session_wins.load(Ordering::Relaxed);
+                        let losses = self.session_losses.load(Ordering::Relaxed);
+                        let pnl_cents = self.session_pnl_cents.load(std::sync::atomic::Ordering::Relaxed);
 
                         info!(
                             market = %market_id,
                             asset = %market.asset,
-                            direction = direction_str,
-                            crypto_price = %crypto_price,
-                            strike = %strike,
-                            price_move_bps = price_move_bps,
-                            market_up = format!("{:.3}", market_prob_up),
-                            market_down = format!("{:.3}", market_prob_down),
-                            edge_bps = edge_bps,
-                            entry_price = format!("{:.3}", entry_price),
-                            time_left_secs = time_left,
-                            "EDGE: Crypto {} {}bps, market pricing {} at {:.3} but should be higher!",
-                            if crypto_favors_up { "UP" } else { "DOWN" },
-                            price_move_abs,
-                            direction_str,
-                            entry_price
+                            up_price = format!("{:.3}", up_price),
+                            down_price = format!("{:.3}", down_price),
+                            yes_bid_ask = format!("{:?}/{:?}", yes_bids, yes_asks),
+                            flow_up = format!("{:.2}", yes_flow),
+                            flow_down = format!("{:.2}", no_flow),
+                            time_left = time_left,
+                            session = format!("{}W-{}L ${:.2}", wins, losses, pnl_cents as f64 / 100.0),
+                            "STATUS: UP={:.1}% DOWN={:.1}% ({}s left) [{}W-{}L ${:.2}]",
+                            up_price * 100.0, down_price * 100.0, time_left, wins, losses, pnl_cents as f64 / 100.0
                         );
-
-                        // Execute paper trade
-                        if self.config.paper_mode && !emitted_signal {
-                            let signal = hft_core::LatencySignal {
-                                signal_id: uuid::Uuid::new_v4().to_string(),
-                                asset: market.asset,
-                                direction,
-                                binance_price: crypto_price,
-                                price_change_bps: price_move_bps,
-                                polymarket_price: Decimal::try_from(entry_price).unwrap_or(Decimal::new(50, 2)),
-                                expected_price: Decimal::try_from(entry_price + (edge_bps as f64 / 10000.0)).unwrap_or(Decimal::new(51, 2)),
-                                edge_bps: edge_bps as u32,
-                                confidence: 0.55 + (edge_bps as f64 / 2000.0),
-                                detected_at_ns: 0,
-                                binance_update_ns: 0,
-                                polymarket_update_ns: 0,
-                                latency_ms: 0,
-                            };
-
-                            let position_size = Decimal::ONE;
-                            if let Some(trade) = self.simulator.execute_trade(&signal, &market, position_size) {
-                                self.trades_executed.fetch_add(1, Ordering::Relaxed);
-                                let payout = Decimal::ONE / trade.entry_price;
-                                info!(
-                                    trade_id = %trade.trade_id,
-                                    entry = %trade.entry_price,
-                                    edge_bps = edge_bps,
-                                    payout = format!("{:.2}x", payout),
-                                    "BET: {} {} @ {:.3} with {}bps edge - payout {:.2}x if wins",
-                                    market.asset,
-                                    direction_str,
-                                    trade.entry_price,
-                                    edge_bps,
-                                    payout
-                                );
-                            }
-                        }
-
-                        emitted_signal = true;
                     }
                 }
 
-                // Update last signal time if we emitted
-                if emitted_signal {
-                    let mut signals = self.last_signal.write().await;
-                    signals.insert(market_id.clone(), std::time::Instant::now());
-                }
+                // End of market processing - signal detection and execution handled above
             }
 
             // Periodic debug logging every 10 seconds
@@ -899,6 +789,28 @@ impl CryptoLatencyApp {
                                 -trade.entry_price
                             };
 
+                            // Update session statistics
+                            if exit_price == Decimal::ONE {
+                                self.session_wins.fetch_add(1, Ordering::Relaxed);
+                            } else {
+                                self.session_losses.fetch_add(1, Ordering::Relaxed);
+                            }
+
+                            // Update P&L (in cents to avoid float atomics)
+                            let pnl_cents = (pnl * Decimal::from(100)).to_string().parse::<i64>().unwrap_or(0);
+                            self.session_pnl_cents.fetch_add(pnl_cents, std::sync::atomic::Ordering::Relaxed);
+
+                            // Get current session stats for logging
+                            let wins = self.session_wins.load(Ordering::Relaxed);
+                            let losses = self.session_losses.load(Ordering::Relaxed);
+                            let total_pnl_cents = self.session_pnl_cents.load(std::sync::atomic::Ordering::Relaxed);
+                            let total_pnl = total_pnl_cents as f64 / 100.0;
+                            let win_rate = if wins + losses > 0 {
+                                (wins as f64 / (wins + losses) as f64) * 100.0
+                            } else {
+                                0.0
+                            };
+
                             info!(
                                 trade_id = %trade.trade_id,
                                 asset = %market.asset,
@@ -908,15 +820,40 @@ impl CryptoLatencyApp {
                                 crypto_price = %crypto_price,
                                 strike = ?market.strike_price,
                                 pnl = %pnl,
-                                "RESOLUTION: {} bet {} - PnL: ${:.4}",
+                                session_wins = wins,
+                                session_losses = losses,
+                                session_pnl = format!("${:.2}", total_pnl),
+                                win_rate = format!("{:.1}%", win_rate),
+                                "RESOLUTION: {} bet {} - PnL: ${:.4} | Session: {}/{} ({:.1}%) ${:.2}",
                                 win_str,
                                 trade.direction,
-                                pnl
+                                pnl,
+                                wins, losses, win_rate, total_pnl
                             );
 
                             self.simulator.close_position(&trade.trade_id, exit_price);
                         }
                     }
+                }
+
+                // Print session summary every 60 seconds if we have trades
+                let wins = self.session_wins.load(Ordering::Relaxed);
+                let losses = self.session_losses.load(Ordering::Relaxed);
+                if (wins + losses > 0) && (last_debug_log.elapsed() > Duration::from_secs(60)) {
+                    let total_pnl_cents = self.session_pnl_cents.load(std::sync::atomic::Ordering::Relaxed);
+                    let total_pnl = total_pnl_cents as f64 / 100.0;
+                    let win_rate = (wins as f64 / (wins + losses) as f64) * 100.0;
+                    let trades = self.trades_executed.load(Ordering::Relaxed);
+
+                    info!(
+                        trades = trades,
+                        wins = wins,
+                        losses = losses,
+                        win_rate = format!("{:.1}%", win_rate),
+                        pnl = format!("${:.2}", total_pnl),
+                        "=== SESSION STATS: {} trades, {}/{} wins ({:.1}%), ${:.2} P&L ===",
+                        trades, wins, losses, win_rate, total_pnl
+                    );
                 }
             }
 

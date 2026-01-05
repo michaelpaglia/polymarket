@@ -1,6 +1,39 @@
 # 15-Minute Crypto Latency HFT - TODO
 
-## Last Session: 2026-01-05 (Session 6 - Orderbook Flow Detection)
+## Last Session: 2026-01-05 (Session 7 - Mechanical Trading System)
+
+### Session 7 Progress
+- [x] **Mechanical trading system** - Three signal types with different conviction levels
+- [x] **Rate limiting by signal type** - COMBO=10s, TILT=30s, FLOW=60s per market
+- [x] **Session statistics tracking** - Wins/losses/P&L displayed in STATUS logs
+- [x] **STATUS log rate limiting** - Every 30 seconds instead of spamming
+
+### Signal Hierarchy
+| Signal | Trigger | Rate Limit | Conviction |
+|--------|---------|------------|------------|
+| COMBO | TILT + FLOW agree | 10s | Highest |
+| TILT | Side < 40% | 30s | Medium |
+| FLOW | flow > 0.6, velocity > 10bps/s | 60s | Lower |
+
+### Example Output
+```
+SIGNAL: FLOW Down @ 0.505 (edge=666bps, payout=1.98x) market=btc-updown-15m
+TRADE: BTC Down @ 0.5052525 ($1 bet via FLOW)
+STATUS: UP=50.5% DOWN=49.5% (769s left) [0W-0L $0.00] market=btc-updown-15m
+```
+
+### Key Files Modified This Session
+- `hft-server/src/crypto_latency.rs` - Mechanical signal system, rate limiting, session stats
+
+### Next Steps
+1. [ ] Test through a full 15-min window with resolution
+2. [ ] Add position tracking to avoid conflicting trades (UP then DOWN)
+3. [ ] Consider velocity threshold tuning (currently 10bps/s)
+4. [ ] Track actual win rate over multiple sessions
+
+---
+
+## Previous Session: 2026-01-05 (Session 6 - Orderbook Flow Detection)
 
 ### Session 6 Progress
 - [x] **Orderbook sorting fixed** - Bids descending, asks ascending for correct best prices
@@ -23,12 +56,6 @@ Flow detection uses:
 ### Key Files Modified This Session
 - `hft-websocket/src/client.rs` - Fixed orderbook sorting (bids desc, asks asc)
 - `hft-server/src/crypto_latency.rs` - Added FLOW signal detection and orderbook logging
-
-### Next Steps
-1. [ ] Enable FLOW-based paper trades (currently just logging)
-2. [ ] Compare FLOW signals with resolution outcomes
-3. [ ] Add rate limiting to FLOW signals (currently spammy)
-4. [ ] Combine FLOW + TILT for higher conviction trades
 
 ---
 
