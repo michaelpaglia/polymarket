@@ -17,8 +17,9 @@ pub const USDC_CONTRACT: &str = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
 /// Chain ID for Polygon mainnet
 pub const POLYGON_CHAIN_ID: u64 = 137;
 
-/// Order data for signing
+/// Order data for signing (camelCase to match Python py_clob_client)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OrderData {
     pub maker: String,
     pub taker: String,
@@ -30,13 +31,17 @@ pub struct OrderData {
     pub nonce: String,
     pub expiration: String,
     pub signature_type: u8,
+    pub signer: String,
 }
 
-/// Signed order ready for submission
+/// Signed order ready for submission (matches Python's order_to_json format)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SignedOrder {
     pub order: OrderData,
     pub signature: String,
+    pub owner: String,
+    pub order_type: String,
 }
 
 /// Order signer for Polymarket
@@ -103,8 +108,10 @@ impl OrderSigner {
         let nonce = generate_nonce();
         let expiration = generate_expiration(300); // 5 minutes
 
+        let signer = self.address_hex();
+
         OrderData {
-            maker,
+            maker: maker.clone(),
             taker,
             token_id: token_id.to_string(),
             maker_amount,
@@ -114,11 +121,13 @@ impl OrderSigner {
             nonce,
             expiration,
             signature_type: 0, // EOA signature
+            signer,
         }
     }
 
     /// Sign order (async for compatibility with ethers)
-    pub async fn sign_order(&self, order: &OrderData) -> HftResult<SignedOrder> {
+    /// api_key is the owner field required by the CLOB API
+    pub async fn sign_order(&self, order: &OrderData, api_key: &str) -> HftResult<SignedOrder> {
         // Create EIP-712 typed data hash
         let order_hash = self.compute_order_hash(order)?;
 
@@ -131,6 +140,8 @@ impl OrderSigner {
         Ok(SignedOrder {
             order: order.clone(),
             signature: format!("0x{}", hex::encode(signature.to_vec())),
+            owner: api_key.to_string(),
+            order_type: "GTC".to_string(),
         })
     }
 
