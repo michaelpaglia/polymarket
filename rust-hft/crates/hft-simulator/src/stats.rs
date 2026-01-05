@@ -2,7 +2,6 @@
 
 use chrono::{DateTime, Utc};
 use rust_decimal::prelude::*;
-use rust_decimal_macros::dec;
 use serde::Serialize;
 use std::collections::VecDeque;
 

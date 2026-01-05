@@ -4,13 +4,12 @@
 
 use anyhow::Result;
 use hft_executor::PositionRedeemer;
-use std::time::Duration;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     // Load environment variables
-    if let Err(_) = dotenvy::dotenv() {
+    if dotenvy::dotenv().is_err() {
         let _ = dotenvy::from_filename("../../.env");
     }
 

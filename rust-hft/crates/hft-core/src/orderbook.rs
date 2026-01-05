@@ -79,7 +79,12 @@ impl FlowTracker {
 
         // Trim old entries beyond window
         let cutoff = timestamp_ns.saturating_sub(self.window_ns);
-        while history.len() > 1 && history.front().map(|s| s.timestamp_ns < cutoff).unwrap_or(false) {
+        while history.len() > 1
+            && history
+                .front()
+                .map(|s| s.timestamp_ns < cutoff)
+                .unwrap_or(false)
+        {
             history.pop_front();
         }
 
@@ -97,8 +102,9 @@ impl FlowTracker {
             return 0.0;
         }
 
-        let oldest = history.front().unwrap();
-        let newest = history.back().unwrap();
+        // Safe: we checked len() >= 2 above
+        let oldest = history.front().expect("checked len >= 2");
+        let newest = history.back().expect("checked len >= 2");
 
         let time_delta_secs = (newest.timestamp_ns - oldest.timestamp_ns) as f64 / 1_000_000_000.0;
         if time_delta_secs < 0.1 {
@@ -161,8 +167,9 @@ impl FlowTracker {
             return 0;
         }
 
-        let oldest = history.front().unwrap();
-        let newest = history.back().unwrap();
+        // Safe: we checked len() >= 2 above
+        let oldest = history.front().expect("checked len >= 2");
+        let newest = history.back().expect("checked len >= 2");
 
         let old_mid = (oldest.bid + oldest.ask) / dec!(2);
         let new_mid = (newest.bid + newest.ask) / dec!(2);
@@ -190,7 +197,6 @@ impl Default for FlowTracker {
 }
 
 impl OrderbookState {
-
     /// Best bid price (highest buy price)
     pub fn best_bid(&self) -> Option<Decimal> {
         self.bids.first().map(|l| l.price)
@@ -319,7 +325,7 @@ impl Orderbook {
     pub fn age_ms(&self) -> u64 {
         let now_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("system time before UNIX epoch")
             .as_nanos() as u64;
         let last = self.last_update_ns.load(Ordering::Acquire);
         if last == 0 {

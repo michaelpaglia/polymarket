@@ -4,7 +4,6 @@ use chrono::{DateTime, Utc};
 use hft_core::{ArbitrageExecution, ExecutionStatus, MarketId};
 use parking_lot::RwLock;
 use rust_decimal::Decimal;
-use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 

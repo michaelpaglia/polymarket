@@ -57,11 +57,19 @@ impl KrakenClient {
         let mut windows = HashMap::new();
         windows.insert(
             CryptoAsset::BTC,
-            PriceWindow::new(CryptoAsset::BTC, config.window_size, config.window_max_age_ms),
+            PriceWindow::new(
+                CryptoAsset::BTC,
+                config.window_size,
+                config.window_max_age_ms,
+            ),
         );
         windows.insert(
             CryptoAsset::ETH,
-            PriceWindow::new(CryptoAsset::ETH, config.window_size, config.window_max_age_ms),
+            PriceWindow::new(
+                CryptoAsset::ETH,
+                config.window_size,
+                config.window_max_age_ms,
+            ),
         );
 
         Self {
@@ -88,7 +96,10 @@ impl KrakenClient {
     /// Get all current momenta
     pub fn get_all_momenta(&self) -> Vec<PriceMomentum> {
         let windows = self.price_windows.read();
-        windows.values().filter_map(|w| w.calculate_momentum()).collect()
+        windows
+            .values()
+            .filter_map(|w| w.calculate_momentum())
+            .collect()
     }
 
     /// Get messages received count
@@ -119,8 +130,12 @@ impl KrakenClient {
                     self.state.store(Arc::new(ConnectionState::Reconnecting));
 
                     if self.running.load(Ordering::SeqCst) {
-                        warn!(delay_ms = self.config.reconnect_delay_ms, "Reconnecting to Kraken...");
-                        tokio::time::sleep(Duration::from_millis(self.config.reconnect_delay_ms)).await;
+                        warn!(
+                            delay_ms = self.config.reconnect_delay_ms,
+                            "Reconnecting to Kraken..."
+                        );
+                        tokio::time::sleep(Duration::from_millis(self.config.reconnect_delay_ms))
+                            .await;
                     }
                 }
             }
@@ -257,7 +272,10 @@ impl KrakenClient {
                 debug!(arr_len = arr.len(), "Kraken short array: {}", text);
             }
         } else {
-            warn!("Kraken unknown message format: {}", &text[..text.len().min(200)]);
+            warn!(
+                "Kraken unknown message format: {}",
+                &text[..text.len().min(200)]
+            );
         }
     }
 

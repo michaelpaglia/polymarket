@@ -1,6 +1,8 @@
 //! SIMD-accelerated JSON message parser
 
-use crate::messages::{BookLevel, BookMessage, LastTradeMessage, PriceChangeMessage, TickSizeMessage, WsMessage};
+use crate::messages::{
+    BookLevel, BookMessage, LastTradeMessage, PriceChangeMessage, TickSizeMessage, WsMessage,
+};
 use hft_core::HftError;
 use simd_json::prelude::*;
 use tracing::warn;
@@ -43,9 +45,7 @@ fn parse_array_message(text: &str) -> Result<WsMessage, HftError> {
 
     // Process first book message we find
     for value in array {
-        let event_type = value
-            .get("event_type")
-            .and_then(|v| v.as_str());
+        let event_type = value.get("event_type").and_then(|v| v.as_str());
 
         if event_type == Some("book") {
             let asset_id = value
@@ -183,9 +183,9 @@ fn detect_event_type(text: &str) -> Option<String> {
         let rest = &text[start + 13..]; // Skip past "event_type":"
         if let Some(colon) = rest.find(':') {
             let after_colon = rest[colon + 1..].trim_start();
-            if after_colon.starts_with('"') {
-                if let Some(end) = after_colon[1..].find('"') {
-                    return Some(after_colon[1..end + 1].to_string());
+            if let Some(stripped) = after_colon.strip_prefix('"') {
+                if let Some(end) = stripped.find('"') {
+                    return Some(stripped[..end].to_string());
                 }
             }
         }
@@ -216,7 +216,11 @@ fn detect_event_type(text: &str) -> Option<String> {
     }
 
     // Also check for simpler format without all fields (still a trade if it has market + price)
-    if text.contains("\"market\"") && has_price && !text.contains("\"bids\"") && !text.contains("\"asks\"") {
+    if text.contains("\"market\"")
+        && has_price
+        && !text.contains("\"bids\"")
+        && !text.contains("\"asks\"")
+    {
         return Some("trade_notification".to_string());
     }
 
@@ -226,7 +230,11 @@ fn detect_event_type(text: &str) -> Option<String> {
     }
 
     // Catch any message with market + asset_id that isn't a book (likely trade-related)
-    if text.contains("\"market\"") && has_asset && !text.contains("\"bids\"") && !text.contains("\"asks\"") {
+    if text.contains("\"market\"")
+        && has_asset
+        && !text.contains("\"bids\"")
+        && !text.contains("\"asks\"")
+    {
         return Some("trade_notification".to_string());
     }
 
@@ -301,20 +309,20 @@ fn parse_levels(value: Option<&simd_json::OwnedValue>) -> Vec<BookLevel> {
 }
 
 fn parse_price_change(text: &str) -> Result<WsMessage, HftError> {
-    let msg: PriceChangeMessage = serde_json::from_str(text)
-        .map_err(|e| HftError::MessageParse(e.to_string()))?;
+    let msg: PriceChangeMessage =
+        serde_json::from_str(text).map_err(|e| HftError::MessageParse(e.to_string()))?;
     Ok(WsMessage::PriceChange(msg))
 }
 
 fn parse_last_trade(text: &str) -> Result<WsMessage, HftError> {
-    let msg: LastTradeMessage = serde_json::from_str(text)
-        .map_err(|e| HftError::MessageParse(e.to_string()))?;
+    let msg: LastTradeMessage =
+        serde_json::from_str(text).map_err(|e| HftError::MessageParse(e.to_string()))?;
     Ok(WsMessage::LastTrade(msg))
 }
 
 fn parse_tick_size(text: &str) -> Result<WsMessage, HftError> {
-    let msg: TickSizeMessage = serde_json::from_str(text)
-        .map_err(|e| HftError::MessageParse(e.to_string()))?;
+    let msg: TickSizeMessage =
+        serde_json::from_str(text).map_err(|e| HftError::MessageParse(e.to_string()))?;
     Ok(WsMessage::TickSize(msg))
 }
 

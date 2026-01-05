@@ -438,7 +438,7 @@ impl BinanceClient {
     fn handle_message(&self, text: &str) {
         let received_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("system time before UNIX epoch")
             .as_nanos() as u64;
 
         // Try to parse as aggTrade
@@ -469,6 +469,7 @@ impl BinanceClient {
 /// Combined stream message wrapper
 #[derive(Debug, serde::Deserialize)]
 struct CombinedStreamMessage {
+    #[allow(dead_code)]
     stream: String,
     data: AggTradeMessage,
 }
