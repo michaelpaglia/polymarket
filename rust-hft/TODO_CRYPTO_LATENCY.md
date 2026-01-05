@@ -7,12 +7,19 @@
 - [x] **FLOW threshold increased** - 0.6 → 0.8 (reduce noisy signals)
 - [x] **FLOW rate limit increased** - 60s → 120s (fewer trades)
 - [x] **P&L bug fixed** - Was parsing string with decimals, now uses round().to_i64()
+- [x] **Tested 10:30PM window** - 30 trades, 29 wins, 1 loss (96.7% win rate), +$17.07 P&L
 
 ### 10PM Window Results (Before Fixes)
 - BTC: Strike $93,026.60 → Final $92,961.70 = DOWN won
 - ETH: Strike $3,192.32 → Final $3,185.83 = DOWN won
 - **Problem**: FLOW signals flip-flopped, bought too many ETH UP trades
 - **Net P&L**: ~-$6.66 (P&L tracking was bugged, showing $0.00)
+
+### 10:30PM Window Results (After Fixes)
+- **29 wins, 1 loss** (96.7% win rate)
+- **Net P&L: +$17.07**
+- TILT strategy correctly identified cheap DOWN tokens and stacked bets
+- Tuned FLOW parameters prevented noisy signals
 
 ### Signal Hierarchy (Updated)
 | Signal | Trigger | Rate Limit | Conviction |
@@ -25,10 +32,10 @@
 - `hft-server/src/crypto_latency.rs` - FLOW tuning, P&L fix
 
 ### Next Steps
-1. [ ] Test with new FLOW parameters (0.8 threshold, 120s rate limit)
+1. [x] Test with new FLOW parameters (0.8 threshold, 120s rate limit) - SUCCESS!
 2. [ ] Consider disabling FLOW entirely if still too noisy
-3. [ ] Focus on TILT-only strategy (worked in Session 5)
-4. [ ] Track win rate over multiple windows
+3. [ ] Track win rate over multiple windows
+4. [ ] Deploy to NL server for lower latency testing
 
 ---
 
