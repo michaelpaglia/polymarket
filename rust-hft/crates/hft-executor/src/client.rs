@@ -123,12 +123,15 @@ impl OrderExecutor {
             .timeout(std::time::Duration::from_millis(config.order_timeout_ms))
             .tcp_nodelay(true);
 
-        // Add proxy if configured
+        // Add proxy if configured, otherwise explicitly disable system proxy
         if let Some(proxy_url) = &config.proxy_url {
             let proxy = Proxy::all(proxy_url)
                 .map_err(|e| HftError::Internal(format!("Invalid proxy URL: {}", e)))?;
             client_builder = client_builder.proxy(proxy);
             info!(proxy = %proxy_url.split('@').last().unwrap_or(proxy_url), "Using HTTP proxy for orders");
+        } else {
+            // Disable system proxy (HTTP_PROXY/HTTPS_PROXY env vars)
+            client_builder = client_builder.no_proxy();
         }
 
         let http_client = client_builder
@@ -297,12 +300,15 @@ impl OrderExecutor {
             .timeout(std::time::Duration::from_millis(config.order_timeout_ms))
             .tcp_nodelay(true);
 
-        // Add proxy if configured
+        // Add proxy if configured, otherwise explicitly disable system proxy
         if let Some(proxy_url) = &config.proxy_url {
             let proxy = Proxy::all(proxy_url)
                 .map_err(|e| HftError::Internal(format!("Invalid proxy URL: {}", e)))?;
             client_builder = client_builder.proxy(proxy);
             info!(proxy = %proxy_url.split('@').last().unwrap_or(proxy_url), "Using HTTP proxy for orders");
+        } else {
+            // Disable system proxy (HTTP_PROXY/HTTPS_PROXY env vars)
+            client_builder = client_builder.no_proxy();
         }
 
         let http_client = client_builder
