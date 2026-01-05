@@ -1,6 +1,5 @@
 //! Signal detection configuration
 
-use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 /// Signal detection configuration

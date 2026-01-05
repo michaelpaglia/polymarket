@@ -123,7 +123,7 @@ impl BinanceTick {
     pub fn age_ms(&self) -> u64 {
         let now_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("system time before UNIX epoch")
             .as_nanos() as u64;
         (now_ns - self.received_ns) / 1_000_000
     }
@@ -182,7 +182,7 @@ impl PriceWindow {
         // Trim by age
         let now_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("system time before UNIX epoch")
             .as_nanos() as u64;
         let cutoff_ns = now_ns - (self.max_age_ms * 1_000_000);
 
@@ -214,7 +214,7 @@ impl PriceWindow {
     pub fn price_at_age_ms(&self, age_ms: u64) -> Option<Decimal> {
         let now_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("system time before UNIX epoch")
             .as_nanos() as u64;
         let target_ns = now_ns - (age_ms * 1_000_000);
 

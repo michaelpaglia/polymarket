@@ -170,7 +170,12 @@ impl OrderSigner {
 
         // Final hash = keccak256("\x19\x01" || domain_separator || struct_hash)
         let final_hash = Keccak256::digest(
-            [&[0x19, 0x01], domain_separator.as_slice(), struct_hash.as_slice()].concat(),
+            [
+                &[0x19, 0x01],
+                domain_separator.as_slice(),
+                struct_hash.as_slice(),
+            ]
+            .concat(),
         );
 
         let mut result = [0u8; 32];
@@ -212,7 +217,7 @@ fn generate_nonce() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .expect("system time before UNIX epoch")
         .as_nanos();
     timestamp.to_string()
 }
@@ -221,7 +226,7 @@ fn generate_expiration(seconds: u64) -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let expiry = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .expect("system time before UNIX epoch")
         .as_secs()
         + seconds;
     expiry.to_string()
@@ -230,13 +235,25 @@ fn generate_expiration(seconds: u64) -> String {
 fn decimal_to_usdc_units(amount: Decimal) -> String {
     // USDC has 6 decimals
     let units = amount * Decimal::from(1_000_000);
-    units.to_string().split('.').next().unwrap().to_string()
+    // split() always yields at least one element
+    units
+        .to_string()
+        .split('.')
+        .next()
+        .expect("split always has first element")
+        .to_string()
 }
 
 fn decimal_to_share_units(amount: Decimal) -> String {
     // Shares have 6 decimals
     let units = amount * Decimal::from(1_000_000);
-    units.to_string().split('.').next().unwrap().to_string()
+    // split() always yields at least one element
+    units
+        .to_string()
+        .split('.')
+        .next()
+        .expect("split always has first element")
+        .to_string()
 }
 
 fn parse_address(s: &str) -> HftResult<Address> {
@@ -244,12 +261,11 @@ fn parse_address(s: &str) -> HftResult<Address> {
 }
 
 fn parse_u256(s: &str) -> HftResult<U256> {
-    if s.starts_with("0x") {
-        U256::from_str_radix(&s[2..], 16)
+    if let Some(stripped) = s.strip_prefix("0x") {
+        U256::from_str_radix(stripped, 16)
             .map_err(|e| HftError::SigningError(format!("Invalid U256: {}", e)))
     } else {
-        U256::from_dec_str(s)
-            .map_err(|e| HftError::SigningError(format!("Invalid U256: {}", e)))
+        U256::from_dec_str(s).map_err(|e| HftError::SigningError(format!("Invalid U256: {}", e)))
     }
 }
 

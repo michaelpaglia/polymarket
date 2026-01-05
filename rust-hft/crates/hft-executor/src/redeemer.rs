@@ -11,7 +11,6 @@ use ethers::types::{Address, Bytes, TransactionRequest, U256};
 use hft_core::{HftError, HftResult};
 use serde::Deserialize;
 use std::str::FromStr;
-use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
@@ -22,7 +21,6 @@ pub const USDC_ADDRESS: &str = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
 
 /// Polygon RPC endpoints
 const DEFAULT_RPC: &str = "https://polygon-rpc.com";
-const BACKUP_RPC: &str = "https://rpc-mainnet.matic.quiknode.pro";
 
 /// Function selector for redeemPositions(address,bytes32,bytes32,uint256[])
 const REDEEM_SELECTOR: [u8; 4] = [0x21, 0x7a, 0x4b, 0x70];
@@ -131,7 +129,8 @@ impl PositionRedeemer {
 
     /// Build the calldata for redeemPositions
     fn build_redeem_calldata(&self, condition_id: [u8; 32], index_sets: Vec<u64>) -> Bytes {
-        let usdc_addr = Address::from_str(USDC_ADDRESS).unwrap();
+        let usdc_addr =
+            Address::from_str(USDC_ADDRESS).expect("USDC_ADDRESS is a valid address constant");
         let parent_collection_id = [0u8; 32];
 
         // Encode parameters
@@ -171,8 +170,8 @@ impl PositionRedeemer {
 
         // Parse condition ID
         let condition_id_str = &position.condition_id;
-        let condition_bytes = if condition_id_str.starts_with("0x") {
-            hex::decode(&condition_id_str[2..])
+        let condition_bytes = if let Some(stripped) = condition_id_str.strip_prefix("0x") {
+            hex::decode(stripped)
                 .map_err(|e| HftError::MessageParse(format!("Invalid condition ID: {}", e)))?
         } else {
             hex::decode(condition_id_str)
@@ -197,9 +196,13 @@ impl PositionRedeemer {
 
         // Choose contract based on neg_risk
         let ctf_address: Address = if neg_risk {
-            NEG_RISK_CTF_ADDRESS.parse().unwrap()
+            NEG_RISK_CTF_ADDRESS
+                .parse()
+                .expect("NEG_RISK_CTF_ADDRESS is a valid address constant")
         } else {
-            CTF_ADDRESS.parse().unwrap()
+            CTF_ADDRESS
+                .parse()
+                .expect("CTF_ADDRESS is a valid address constant")
         };
 
         // Build calldata

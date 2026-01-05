@@ -119,7 +119,7 @@ pub async fn set_capital(
 
     // Update limits if provided
     if req.max_position_size_usd.is_some() || req.max_exposure_usd.is_some() {
-        let current = state.risk_manager.stats();
+        let _current = state.risk_manager.stats();
         let mut limits = RiskLimits::default();
 
         if let Some(max_pos) = req.max_position_size_usd {
@@ -221,14 +221,19 @@ pub async fn paper_trade(
     let start = Instant::now();
 
     // Use provided values or defaults that show a profitable arbitrage
-    let market_id = req.market_id.unwrap_or_else(|| "paper-test-market".to_string());
-    let yes_price = req.yes_price.unwrap_or(dec!(0.45));  // 45 cents
-    let no_price = req.no_price.unwrap_or(dec!(0.52));    // 52 cents
-    let size_usd = req.size_usd.unwrap_or(dec!(100));     // $100 test trade
+    let market_id = req
+        .market_id
+        .unwrap_or_else(|| "paper-test-market".to_string());
+    let yes_price = req.yes_price.unwrap_or(dec!(0.45)); // 45 cents
+    let no_price = req.no_price.unwrap_or(dec!(0.52)); // 52 cents
+    let size_usd = req.size_usd.unwrap_or(dec!(100)); // $100 test trade
 
     let price_sum = yes_price + no_price;
     let spread = Decimal::ONE - price_sum;
-    let spread_bps = ((spread * dec!(10000)).to_string().parse::<f64>().unwrap_or(0.0)) as u32;
+    let spread_bps = ((spread * dec!(10000))
+        .to_string()
+        .parse::<f64>()
+        .unwrap_or(0.0)) as u32;
 
     // Check if this would be a valid arbitrage
     if price_sum >= Decimal::ONE {
@@ -335,20 +340,16 @@ pub async fn subscribe_market(
     let no_token = TokenId::new(&req.no_token_id);
 
     // Register market with arbitrage detector
-    let orderbook = arb_detector.register_market(
-        market_id.clone(),
-        yes_token.clone(),
-        no_token.clone(),
-    );
+    let orderbook =
+        arb_detector.register_market(market_id.clone(), yes_token.clone(), no_token.clone());
 
     // Register with WebSocket client
     ws_client.register_market(orderbook).await;
 
     // Subscribe to both token IDs
-    ws_client.subscribe(vec![
-        req.yes_token_id.clone(),
-        req.no_token_id.clone(),
-    ]).await;
+    ws_client
+        .subscribe(vec![req.yes_token_id.clone(), req.no_token_id.clone()])
+        .await;
 
     // Update subscribed count
     let count = arb_detector.market_count() as u64;
@@ -412,10 +413,9 @@ pub async fn connect_websocket(
 
                 let orderbook = arb.register_market(market_id, yes_token, no_token);
                 ws_client.register_market(orderbook).await;
-                ws_client.subscribe(vec![
-                    market.yes_token_id,
-                    market.no_token_id,
-                ]).await;
+                ws_client
+                    .subscribe(vec![market.yes_token_id, market.no_token_id])
+                    .await;
             }
             state.set_markets_count(arb.market_count() as u64);
         }
@@ -488,20 +488,26 @@ pub async fn get_orderbook(
         let no_bid = no_snap.bids.first().map(|l| l.price.to_string());
         let no_ask = no_snap.asks.first().map(|l| l.price.to_string());
 
-        let (price_sum, spread_bps, has_arb) = if let (Some(ya), Some(na)) =
-            (yes_snap.asks.first(), no_snap.asks.first())
-        {
-            let sum = ya.price + na.price;
-            let spread = rust_decimal::Decimal::ONE - sum;
-            let bps = if spread > rust_decimal::Decimal::ZERO {
-                ((spread * rust_decimal_macros::dec!(10000)).to_string().parse::<f64>().unwrap_or(0.0)) as u32
+        let (price_sum, spread_bps, has_arb) =
+            if let (Some(ya), Some(na)) = (yes_snap.asks.first(), no_snap.asks.first()) {
+                let sum = ya.price + na.price;
+                let spread = rust_decimal::Decimal::ONE - sum;
+                let bps = if spread > rust_decimal::Decimal::ZERO {
+                    ((spread * rust_decimal_macros::dec!(10000))
+                        .to_string()
+                        .parse::<f64>()
+                        .unwrap_or(0.0)) as u32
+                } else {
+                    0
+                };
+                (
+                    Some(sum.to_string()),
+                    Some(bps),
+                    sum < rust_decimal::Decimal::ONE,
+                )
             } else {
-                0
+                (None, None, false)
             };
-            (Some(sum.to_string()), Some(bps), sum < rust_decimal::Decimal::ONE)
-        } else {
-            (None, None, false)
-        };
 
         Json(OrderbookResponse {
             market_id,
@@ -571,9 +577,7 @@ pub async fn sync_balance(
 }
 
 /// Get current balance allocation info
-pub async fn get_balance_info(
-    State(state): State<Arc<AppState>>,
-) -> Json<BalanceInfo> {
+pub async fn get_balance_info(State(state): State<Arc<AppState>>) -> Json<BalanceInfo> {
     Json(state.risk_manager.balance_info())
 }
 

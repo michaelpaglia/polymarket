@@ -11,7 +11,7 @@ use rust_decimal::Decimal;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 /// Discovery configuration
 #[derive(Debug, Clone)]
@@ -179,7 +179,8 @@ impl CryptoMarketDiscovery {
     /// Record a price update for momentum tracking
     fn record_price(&self, market_id: &str, up_price: f64, down_price: f64) {
         // Update price cache
-        self.prices.insert(market_id.to_string(), (up_price, down_price));
+        self.prices
+            .insert(market_id.to_string(), (up_price, down_price));
 
         // Update momentum tracker
         let mut momentum = self.momentum.lock();
