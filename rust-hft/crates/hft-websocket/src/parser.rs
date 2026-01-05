@@ -5,7 +5,7 @@ use crate::messages::{
 };
 use hft_core::HftError;
 use simd_json::prelude::*;
-use tracing::warn;
+use tracing::trace;
 
 /// Parse WebSocket message with SIMD acceleration
 pub fn parse_message(text: &str) -> Result<WsMessage, HftError> {
@@ -28,7 +28,7 @@ pub fn parse_message(text: &str) -> Result<WsMessage, HftError> {
         // Trade notifications - silently ignore (we only care about book updates)
         Some("trade_notification") => Ok(WsMessage::Unknown(text.to_string())),
         _ => {
-            warn!(text = &text[..text.len().min(200)], "Unknown message type");
+            trace!(text = &text[..text.len().min(200)], "Unknown message type");
             Ok(WsMessage::Unknown(text.to_string()))
         }
     }

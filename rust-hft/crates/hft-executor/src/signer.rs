@@ -104,22 +104,25 @@ impl OrderSigner {
         let taker = "0x0000000000000000000000000000000000000000".to_string();
 
         // Calculate amounts based on side with proper decimal precision
+        // IMPORTANT: Truncate shares first, THEN calculate USDC from truncated shares
         // BUY: maker (USDC) max 4 decimals, taker (shares) max 2 decimals
         // SELL: maker (shares) max 2 decimals, taker (USDC) max 4 decimals
         let (maker_amount, taker_amount) = match side {
             Side::Buy => {
-                let usd_amount = price * size;
-                let shares = size;
+                // Truncate shares first, then calculate USDC
+                let shares_truncated = size.trunc_with_scale(2);
+                let usd_amount = price * shares_truncated;
                 (
                     decimal_to_usdc_units(usd_amount, 4),
-                    decimal_to_share_units(shares, 2),
+                    decimal_to_share_units(shares_truncated, 2),
                 )
             }
             Side::Sell => {
-                let shares = size;
-                let usd_amount = price * size;
+                // Truncate shares first, then calculate USDC
+                let shares_truncated = size.trunc_with_scale(2);
+                let usd_amount = price * shares_truncated;
                 (
-                    decimal_to_share_units(shares, 2),
+                    decimal_to_share_units(shares_truncated, 2),
                     decimal_to_usdc_units(usd_amount, 4),
                 )
             }
@@ -290,16 +293,6 @@ fn generate_nonce() -> String {
         .expect("system time before UNIX epoch")
         .as_nanos();
     timestamp.to_string()
-}
-
-fn generate_expiration(seconds: u64) -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let expiry = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time before UNIX epoch")
-        .as_secs()
-        + seconds;
-    expiry.to_string()
 }
 
 fn decimal_to_usdc_units(amount: Decimal, max_decimals: u32) -> String {
