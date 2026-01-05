@@ -310,7 +310,8 @@ impl PriceWindow {
 
     fn decimal_to_scaled(&self, price: Decimal) -> Option<u64> {
         let scaled = price * Decimal::from(PRICE_SCALE);
-        scaled.to_string().parse::<u64>().ok()
+        // Use trunc() to remove decimal places before converting to u64
+        scaled.trunc().to_u64()
     }
 
     fn scaled_to_decimal(&self, scaled: u64) -> Decimal {

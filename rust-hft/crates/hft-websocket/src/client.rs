@@ -663,33 +663,83 @@ impl WebSocketClient {
 
         // Update orderbook
         let token_map = self.token_to_market.read().await;
+
+        // Debug: Check if this asset_id is one we're tracking
+        let is_registered = token_map.contains_key(&book.asset_id);
+        if !is_registered && !book.bids.is_empty() {
+            debug!(
+                asset_id = %book.asset_id,
+                market = %book.market,
+                bids = book.bids.len(),
+                asks = book.asks.len(),
+                "Book for unregistered asset (not one of our 15M markets)"
+            );
+        }
+
         if let Some(market_id) = token_map.get(&book.asset_id) {
+            // Debug: We found a match!
+            info!(
+                asset_id = %book.asset_id,
+                market_id = %market_id.0,
+                bids = book.bids.len(),
+                asks = book.asks.len(),
+                "Book update for REGISTERED market!"
+            );
             let markets = self.markets.read().await;
             if let Some(market) = markets.get(&market_id.0) {
-                // Convert book levels to PriceLevels
-                let bids: Vec<PriceLevel> = book
+                // Convert book levels to PriceLevels and sort properly
+                // Bids: sorted DESCENDING (highest first = best bid)
+                // Asks: sorted ASCENDING (lowest first = best ask)
+                let mut bids: Vec<PriceLevel> = book
                     .bids
                     .iter()
                     .filter_map(|l| l.to_price_level())
                     .collect();
-                let asks: Vec<PriceLevel> = book
+                bids.sort_by(|a, b| b.price.cmp(&a.price)); // Descending
+
+                let mut asks: Vec<PriceLevel> = book
                     .asks
                     .iter()
                     .filter_map(|l| l.to_price_level())
                     .collect();
+                asks.sort_by(|a, b| a.price.cmp(&b.price)); // Ascending
 
                 let state = OrderbookState {
-                    bids,
-                    asks,
+                    bids: bids.clone(),
+                    asks: asks.clone(),
                     timestamp_ns: price_update.timestamp_ns,
                 };
 
                 // Update the appropriate side
                 if book.asset_id == market.yes_token_id.0 {
                     market.yes_book.update(state);
+                    info!(
+                        market_id = %market_id.0,
+                        bids_count = bids.len(),
+                        asks_count = asks.len(),
+                        "Updated YES book"
+                    );
                 } else if book.asset_id == market.no_token_id.0 {
                     market.no_book.update(state);
+                    info!(
+                        market_id = %market_id.0,
+                        bids_count = bids.len(),
+                        asks_count = asks.len(),
+                        "Updated NO book"
+                    );
+                } else {
+                    warn!(
+                        asset_id = %book.asset_id,
+                        yes_token = %market.yes_token_id.0,
+                        no_token = %market.no_token_id.0,
+                        "Asset ID doesn't match yes or no token"
+                    );
                 }
+            } else {
+                warn!(
+                    market_id = %market_id.0,
+                    "Market not found in markets map"
+                );
             }
         }
     }

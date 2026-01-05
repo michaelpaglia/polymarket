@@ -79,7 +79,8 @@ impl AtomicPrice {
 
     fn decimal_to_scaled(price: Decimal) -> u64 {
         let scaled = price * Decimal::from(PRICE_SCALE);
-        scaled.to_string().parse::<u64>().unwrap_or(0)
+        // Truncate to integer - using floor to handle any fractional parts
+        scaled.floor().to_string().parse::<u64>().unwrap_or(0)
     }
 
     fn scaled_to_decimal(scaled: u64) -> Decimal {
