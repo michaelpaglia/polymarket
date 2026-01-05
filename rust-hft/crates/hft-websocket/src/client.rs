@@ -633,17 +633,22 @@ impl WebSocketClient {
             );
             let markets = self.markets.read().await;
             if let Some(market) = markets.get(&market_id.0) {
-                // Convert book levels to PriceLevels
-                let bids: Vec<PriceLevel> = book
+                // Convert book levels to PriceLevels and sort properly
+                // Bids: sorted DESCENDING (highest first = best bid)
+                // Asks: sorted ASCENDING (lowest first = best ask)
+                let mut bids: Vec<PriceLevel> = book
                     .bids
                     .iter()
                     .filter_map(|l| l.to_price_level())
                     .collect();
-                let asks: Vec<PriceLevel> = book
+                bids.sort_by(|a, b| b.price.cmp(&a.price)); // Descending
+
+                let mut asks: Vec<PriceLevel> = book
                     .asks
                     .iter()
                     .filter_map(|l| l.to_price_level())
                     .collect();
+                asks.sort_by(|a, b| a.price.cmp(&b.price)); // Ascending
 
                 let state = OrderbookState {
                     bids: bids.clone(),
