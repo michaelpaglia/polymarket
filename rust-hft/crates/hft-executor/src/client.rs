@@ -537,15 +537,26 @@ impl OrderExecutor {
 
     /// Get order status
     pub async fn get_order_status(&self, order_id: &str) -> HftResult<OrderStatus> {
-        let url = format!("{}/order/{}", self.config.clob_url, order_id);
+        let request_path = format!("/order/{}", order_id);
+        let url = format!("{}{}", self.config.clob_url, request_path);
+
+        // Get timestamp for HMAC
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before UNIX epoch")
+            .as_secs() as i64;
+
+        // Build HMAC signature (empty body for GET)
+        let hmac_sig = self.build_hmac_signature(timestamp, "GET", &request_path, "")?;
 
         let response = self
             .http_client
             .get(&url)
-            .header("POLY-ADDRESS", self.signer.address_hex())
-            .header("POLY-API-KEY", &self.credentials.api_key)
-            .header("POLY-API-SECRET", &self.credentials.api_secret)
-            .header("POLY-API-PASSPHRASE", &self.credentials.api_passphrase)
+            .header("POLY_ADDRESS", self.signer.address_hex())
+            .header("POLY_SIGNATURE", &hmac_sig)
+            .header("POLY_TIMESTAMP", timestamp.to_string())
+            .header("POLY_API_KEY", &self.credentials.api_key)
+            .header("POLY_PASSPHRASE", &self.credentials.api_passphrase)
             .send()
             .await
             .map_err(|e| HftError::HttpError(e.to_string()))?;
@@ -565,15 +576,26 @@ impl OrderExecutor {
 
     /// Cancel order
     pub async fn cancel_order(&self, order_id: &str) -> HftResult<()> {
-        let url = format!("{}/order/{}", self.config.clob_url, order_id);
+        let request_path = format!("/order/{}", order_id);
+        let url = format!("{}{}", self.config.clob_url, request_path);
+
+        // Get timestamp for HMAC
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before UNIX epoch")
+            .as_secs() as i64;
+
+        // Build HMAC signature (empty body for DELETE)
+        let hmac_sig = self.build_hmac_signature(timestamp, "DELETE", &request_path, "")?;
 
         let response = self
             .http_client
             .delete(&url)
-            .header("POLY-ADDRESS", self.signer.address_hex())
-            .header("POLY-API-KEY", &self.credentials.api_key)
-            .header("POLY-API-SECRET", &self.credentials.api_secret)
-            .header("POLY-API-PASSPHRASE", &self.credentials.api_passphrase)
+            .header("POLY_ADDRESS", self.signer.address_hex())
+            .header("POLY_SIGNATURE", &hmac_sig)
+            .header("POLY_TIMESTAMP", timestamp.to_string())
+            .header("POLY_API_KEY", &self.credentials.api_key)
+            .header("POLY_PASSPHRASE", &self.credentials.api_passphrase)
             .send()
             .await
             .map_err(|e| HftError::HttpError(e.to_string()))?;
