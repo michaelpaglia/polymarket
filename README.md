@@ -17,8 +17,8 @@ A dual-strategy automated trading system for [Polymarket](https://polymarket.com
 ### 1. Install Dependencies
 
 ```bash
-git clone https://github.com/michaelpaglia/polymarket-bot.git
-cd polymarket-bot
+git clone https://github.com/michaelpaglia/polymarket.git
+cd polymarket
 
 # Python dependencies
 pip install -e .
