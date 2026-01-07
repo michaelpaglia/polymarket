@@ -1,8 +1,16 @@
 # Polymarket Trading Bot
 
-A dual-strategy trading system for Polymarket prediction markets combining:
-1. **Sentiment Bot** (Python) - News/Twitter analysis for directional trades
-2. **HFT Arbitrage** (Rust) - Low-latency YES/NO mispricing capture
+[![Rust](https://img.shields.io/badge/Rust-1.75+-orange?logo=rust)](https://www.rust-lang.org/)
+[![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white)](https://python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE.md)
+[![Polygon](https://img.shields.io/badge/Network-Polygon-8247E5?logo=polygon&logoColor=white)](https://polygon.technology/)
+
+A dual-strategy automated trading system for [Polymarket](https://polymarket.com/) prediction markets, combining real-time sentiment analysis with low-latency arbitrage execution.
+
+| Module | Language | Strategy | Edge Source |
+|--------|----------|----------|-------------|
+| **Sentiment Bot** | Python | News/Twitter analysis | Information advantage (5-30 min) |
+| **HFT Arbitrage** | Rust | YES/NO mispricing | Speed + market inefficiency |
 
 ## Quick Start
 
@@ -365,6 +373,14 @@ cargo clippy
 cargo build --release
 ```
 
+## Disclaimer
+
+This software is for educational and research purposes. Trading prediction markets involves substantial risk of loss. Past performance does not guarantee future results. Always start with paper trading and use only funds you can afford to lose.
+
+## Contributing
+
+Contributions welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
 ## License
 
-MIT
+MIT - see [LICENSE.md](LICENSE.md)

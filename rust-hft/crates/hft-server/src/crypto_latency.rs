@@ -466,8 +466,33 @@ impl CryptoLatencyApp {
                 // 2. FLOW: Buy side with strong orderbook momentum (flow > 0.6)
                 // 3. COMBO: Both TILT and FLOW agree = higher conviction
                 //
+                // CRITICAL: All signals require crypto price confirmation!
+                // Only bet UP if crypto is moving UP, only bet DOWN if moving DOWN.
+                //
                 // All signals rate-limited to once per 5 seconds per market
                 // =======================================================
+
+                // Get crypto price momentum for this asset (BTC or ETH)
+                let asset_type = match market.asset {
+                    hft_core::CryptoAsset::BTC => CryptoAsset::BTC,
+                    hft_core::CryptoAsset::ETH => CryptoAsset::ETH,
+                };
+                let crypto_momentum = momenta
+                    .iter()
+                    .find(|m| m.asset == asset_type)
+                    .map(|m| (m.change_1s_bps, m.change_5s_bps));
+
+                // Crypto price confirmation: only trade in direction of actual price movement
+                // Positive bps = crypto going UP, negative bps = crypto going DOWN
+                let (crypto_favors_up, crypto_favors_down) = match crypto_momentum {
+                    Some((_change_1s, change_5s)) => {
+                        // Use 5s change for more stability, require at least 5 bps movement
+                        let favors_up = change_5s > 5;
+                        let favors_down = change_5s < -5;
+                        (favors_up, favors_down)
+                    }
+                    None => (false, false), // No momentum data = no trading
+                };
 
                 // Get orderbook flow data
                 let (yes_flow, no_flow, yes_velocity, no_velocity) = {
@@ -495,29 +520,30 @@ impl CryptoLatencyApp {
                 let flow_down = no_flow > flow_threshold && no_velocity > velocity_threshold;
 
                 // Determine trade direction and signal type
+                // CRITICAL: All signals now require crypto price confirmation!
                 let (should_trade, direction, signal_type, entry_price, edge_bps) =
-                    if tilt_up && flow_up {
-                        // COMBO: Both tilt AND flow favor UP
+                    if tilt_up && flow_up && crypto_favors_up {
+                        // COMBO: Tilt + flow + crypto price all favor UP
                         let edge = ((0.50 - up_price.min(0.50)) * 10000.0) as u32 + 500; // +500 for combo
                         (true, hft_core::Direction::Up, "COMBO", up_price, edge)
-                    } else if tilt_down && flow_down {
-                        // COMBO: Both tilt AND flow favor DOWN
+                    } else if tilt_down && flow_down && crypto_favors_down {
+                        // COMBO: Tilt + flow + crypto price all favor DOWN
                         let edge = ((0.50 - down_price.min(0.50)) * 10000.0) as u32 + 500;
                         (true, hft_core::Direction::Down, "COMBO", down_price, edge)
-                    } else if tilt_up {
-                        // TILT only: cheap UP side
+                    } else if tilt_up && crypto_favors_up {
+                        // TILT: cheap UP side + crypto price confirming
                         let edge = ((0.50 - up_price.min(0.50)) * 10000.0) as u32;
                         (true, hft_core::Direction::Up, "TILT", up_price, edge)
-                    } else if tilt_down {
-                        // TILT only: cheap DOWN side
+                    } else if tilt_down && crypto_favors_down {
+                        // TILT: cheap DOWN side + crypto price confirming
                         let edge = ((0.50 - down_price.min(0.50)) * 10000.0) as u32;
                         (true, hft_core::Direction::Down, "TILT", down_price, edge)
-                    } else if flow_up && up_price < 0.55 {
-                        // FLOW only: strong UP momentum, price not too expensive
+                    } else if flow_up && up_price < 0.55 && crypto_favors_up {
+                        // FLOW: strong UP momentum + crypto price confirming
                         let edge = (yes_flow * 1000.0) as u32;
                         (true, hft_core::Direction::Up, "FLOW", up_price, edge)
-                    } else if flow_down && down_price < 0.55 {
-                        // FLOW only: strong DOWN momentum, price not too expensive
+                    } else if flow_down && down_price < 0.55 && crypto_favors_down {
+                        // FLOW: strong DOWN momentum + crypto price confirming
                         let edge = (no_flow * 1000.0) as u32;
                         (true, hft_core::Direction::Down, "FLOW", down_price, edge)
                     } else {
@@ -547,6 +573,7 @@ impl CryptoLatencyApp {
                         hft_core::Direction::Down => "Down",
                     };
                     let payout_if_wins = 1.0 / entry_price;
+                    let crypto_5s_bps = crypto_momentum.map(|(_, b)| b).unwrap_or(0);
 
                     info!(
                         market = %market_id,
@@ -556,12 +583,13 @@ impl CryptoLatencyApp {
                         entry = format!("{:.3}", entry_price),
                         edge_bps = edge_bps,
                         payout = format!("{:.2}x", payout_if_wins),
+                        crypto_5s_bps = crypto_5s_bps,
                         flow_up = format!("{:.2}", yes_flow),
                         flow_down = format!("{:.2}", no_flow),
                         time_left = time_left,
                         live = !self.config.paper_mode,
-                        "SIGNAL: {} {} @ {:.3} (edge={}bps, payout={:.2}x) [{}]",
-                        signal_type, direction_str, entry_price, edge_bps, payout_if_wins,
+                        "SIGNAL: {} {} @ {:.3} (crypto={}bps, edge={}bps, payout={:.2}x) [{}]",
+                        signal_type, direction_str, entry_price, crypto_5s_bps, edge_bps, payout_if_wins,
                         if self.config.paper_mode { "PAPER" } else { "LIVE" }
                     );
 
