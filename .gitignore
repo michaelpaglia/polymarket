@@ -1,8 +1,11 @@
-# Environment
+# Environment & Secrets
 .env
 .venv/
 venv/
 env/
+
+# Proxy credentials (NEVER commit!)
+proxies.txt
 
 # Python
 __pycache__/
